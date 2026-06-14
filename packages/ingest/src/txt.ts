@@ -11,6 +11,7 @@ import type { ExtractedDocument, DocumentSection } from '@workagent/shared';
 import { FileParseError } from '@workagent/shared';
 
 import type { DocumentExtractor } from './pipeline.js';
+import { computeHash } from './docx.js';
 
 const readFile = promisify(fs.readFile);
 
@@ -42,6 +43,9 @@ export class TxtExtractor implements DocumentExtractor {
       const ext = path.extname(filePath).toLowerCase();
       const isMarkdown = ext === '.md';
 
+      // 计算文件内容hash
+      const contentHash = computeHash(new TextEncoder().encode(content));
+
       // 按标题或段落分节
       const sections = isMarkdown
         ? this.parseMarkdownSections(content)
@@ -54,6 +58,10 @@ export class TxtExtractor implements DocumentExtractor {
         content,
         sections,
         metadata: {
+          contentHash,
+          outline: [],
+          sectionCount: sections.length,
+          paragraphCount: sections.length,
           charCount: content.length,
           lineCount: content.split('\n').length,
           extractorVersion: '1.0.0',

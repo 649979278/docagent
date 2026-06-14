@@ -7,6 +7,12 @@
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
+    "doctor:env": "node scripts/doctor-env.js",
+    "test:unit": "pnpm --filter @workagent/agent-core --filter @workagent/ingest --filter @workagent/rag --filter @workagent/store --filter @workagent/tools test",
+    "test:e2e": "node scripts/run-vitest.js run --config vitest.config.ts",
+    "test:rag": "node scripts/run-vitest.js run tests/e2e/rag-quality.test.ts --config vitest.config.ts",
+    "test:all": "pnpm test:unit && pnpm test:e2e",
+    "verify": "pnpm doctor:env && pnpm test:unit && pnpm test:e2e && pnpm --filter @workagent/desktop build",
     "clean": "pnpm -r clean"
   },
   "engines": {
@@ -14,6 +20,8 @@
   },
   "packageManager": "pnpm@9.15.0",
   "devDependencies": {
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "vite": "^6.4.3",
+    "vitest": "^4.1.8"
   }
 }

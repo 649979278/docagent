@@ -6,6 +6,8 @@
 import initSqlJs from 'sql.js';
 import { migrations as migrations001 } from './migrations/001_initial.js';
 import { applyMigration002 } from './migrations/002_add_tool_name.js';
+import { applyMigration003, MIGRATION_003_VERSION } from './migrations/003_workspaces_runs.js';
+import { applyMigration004, MIGRATION_004_VERSION } from './migrations/004_chunks_fts.js';
 import { DB_FILENAME, APP_DATA_RELATIVE_PATH } from '@workagent/shared';
 import path from 'path';
 import fs from 'fs';
@@ -20,7 +22,7 @@ interface SqlMigration {
 /** 函数型迁移（需要自定义逻辑，如忽略"列已存在"错误） */
 interface FnMigration {
   version: number;
-  fn: (db: Database, log: (msg: string) => void) => void;
+  fn: (db: Database, log: (msg: string) => void, fts5Available: boolean) => void;
 }
 
 /** 迁移项 */
@@ -30,6 +32,8 @@ type MigrationItem = SqlMigration | FnMigration;
 const migrations: MigrationItem[] = [
   ...migrations001.map(m => ({ version: m.version, sql: m.sql } as SqlMigration)),
   { version: 2, fn: applyMigration002 } as FnMigration,
+  { version: MIGRATION_003_VERSION, fn: applyMigration003 } as FnMigration,
+  { version: MIGRATION_004_VERSION, fn: applyMigration004 } as FnMigration,
 ];
 
 /** 数据库配置 */
@@ -230,7 +234,7 @@ function runMigrations(db: Database, log: (msg: string) => void, fts5Available: 
         const sql = fts5Available ? migration.sql : removeFts5Statements(migration.sql);
         db.exec(sql);
       } else if ('fn' in migration) {
-        migration.fn(db, log);
+        migration.fn(db, log, fts5Available);
       }
 
       log(`Migration ${migration.version} applied successfully`);

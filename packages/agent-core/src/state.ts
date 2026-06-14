@@ -14,6 +14,7 @@ import type {
   Memory,
   ContextBudget,
   ToolCall,
+  CompactBoundary,
 } from '@workagent/shared';
 
 // ============================================================
@@ -22,6 +23,21 @@ import type {
 
 /** Agent循环决策 */
 export type LoopDecision = 'Continue' | 'EnterPlan' | 'WaitApproval' | 'Done';
+
+/** 运行时转换类型 - 对齐 Claude Code 的 transition 概念 */
+export type TransitionType =
+  | 'next_turn'              // 正常有工具调用，继续
+  | 'error_retry'            // 工具失败重试
+  | 'enter_plan'             // 进入计划模式
+  | 'wait_approval'          // 等待用户批准计划
+  | 'execute_plan'           // 执行已批准计划
+  | 'completed'              // 正常完成
+  | 'prompt_too_long'        // 上下文超限
+  | 'aborted'                // 用户中断
+  | 'max_turns'              // 达到最大轮次
+  | 'model_error'            // 模型调用失败
+  | 'reactive_compact_retry' // reactive 压缩后重试
+  | 'compact_recovery';      // 压缩后恢复
 
 /** 工具执行追踪记录 */
 export interface ToolExecutionTrace {
@@ -104,13 +120,21 @@ export interface CompactResult {
   /** 压缩级别（1=微压缩, 2=摘要压缩） */
   level: 1 | 2;
   /** 使用的压缩策略 */
-  strategy: 'micro' | 'summary';
+  strategy: 'micro' | 'summary' | 'reactive';
   /** 释放的token数 */
   freedTokens: number;
   /** 压缩后的消息列表 */
   messages: Message[];
   /** 压缩摘要文本（level=2时有值） */
   summary: string | null;
+  /** 压缩边界记录 - 记录压缩前后的消息数和释放的 token */
+  boundary: CompactBoundary | null;
+  /** 压缩摘要中保留的引用 ID */
+  retainedCitationIds: string[];
+  /** 压缩时保留的工具摘要 */
+  retainedToolSummaries: string[];
+  /** 恢复提示 - 用于 post-compact recovery 时指导恢复 */
+  restorationHints: string[];
 }
 
 // ============================================================

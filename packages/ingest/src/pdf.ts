@@ -12,6 +12,7 @@ import type { ExtractedDocument, DocumentSection } from '@workagent/shared';
 import { FileParseError } from '@workagent/shared';
 
 import type { DocumentExtractor } from './pipeline.js';
+import { computeHash } from './docx.js';
 
 const readFile = promisify(fs.readFile);
 
@@ -43,6 +44,9 @@ export class PdfExtractor implements DocumentExtractor {
   async extract(filePath: string): Promise<ExtractedDocument> {
     try {
       const fileBuffer = await readFile(filePath);
+
+      // 计算文件内容hash
+      const contentHash = computeHash(new Uint8Array(fileBuffer));
 
       // 检测PDF魔数
       const headerSlice = fileBuffer.subarray(0, Math.min(fileBuffer.length, 5));
@@ -79,6 +83,9 @@ export class PdfExtractor implements DocumentExtractor {
         content: fullText,
         sections,
         metadata: {
+          contentHash,
+          outline: [],
+          sectionCount: sections.length,
           pageCount,
           fileSize: fileBuffer.length,
           extractorVersion: usedFallback ? '1.0.0-fallback' : '1.0.0-pdf-parse',

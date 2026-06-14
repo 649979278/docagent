@@ -1,8 +1,18 @@
 /**
  * AgentRuntime - Agent运行时核心，参考Claude Code query.ts的agentic loop模式
- * 循环：compact → enrich → selectTools → allocateBudget → callModel(stream) → parseToolCalls → executeTools(串行) → persistTurn → continue/done
- * 工具失败一次fallback，不无限重试
- * 类型化错误处理（handleError → recovery strategy）
+ * Per-Iteration Pipeline (对齐 Claude Code):
+ *   1. getMessagesAfterCompactBoundary
+ *   2. applyToolResultBudget
+ *   3. microcompactMessages
+ *   4. contextCollapse
+ *   5. autoCompactIfNeeded
+ *   6. token blocking limit check
+ *   7. callModel (stream)
+ *   8. parseToolCalls
+ *   9. executeTools
+ *  10. persistTurn
+ *  11. checkTokenBudget
+ *  12. buildNextState (不可变更新)
  */
 
 import type {
@@ -17,6 +27,7 @@ import type {
   ContextBudget,
   Memory,
   RetrievedChunk,
+  RunTerminalReason,
 } from '@workagent/shared';
 import {
   ContextLengthExceededError,
@@ -29,17 +40,35 @@ import {
 import type { AgentEventEnvelope, AgentEventType, AgentEventDataMap } from '@workagent/shared';
 import type { ModelProvider, ChatMessage, ToolCallResult, ModelEvent } from '@workagent/model-provider';
 import type { Database, MessageRecord } from '@workagent/store';
-import { createMessage, createMessagesBatch, getRecentMessages } from '@workagent/store';
+import { createMessage, createMessagesBatch, getRecentMessages, createAgentRun, createAgentEvent, endAgentRun } from '@workagent/store';
 import type { ToolRegistry, ToolExecutor, AgentTool } from '@workagent/tools';
 import { toToolDefinition } from '@workagent/tools';
 import type { RAGSearchProvider } from '@workagent/tools';
-import type { LoopState, TurnState, RuntimeContext } from './state.js';
-import { createLoopState, createTurnState, createRuntimeContext } from './state.js';
-import { routeAfterResponse } from './router.js';
-import { allocateBudget, estimateTokens } from './context/budget.js';
-import { compactContext, reactiveCompact, assessCompactNeed } from './context/compact.js';
+import type { RuntimeContext } from './state.js';
+import { createRuntimeContext } from './state.js';
+import type { QueryLoopState } from './query-state.js';
+import { createQueryLoopState, updateQueryLoopState } from './query-state.js';
+import { routeAfterQueryLoop, shouldSuggestPlanMode } from './router.js';
+import { BudgetManager, allocateBudget, estimateTokens } from './context/budget.js';
+import { compactContext, reactiveCompact, assessCompactNeed, autoCompactIfNeeded } from './context/compact.js';
+import { recoverFromCompact } from './context/compact-recovery.js';
+import { drainCollapse } from './context/drain-collapse.js';
+import { microCompact } from './context/microCompact.js';
+import {
+  getMessagesAfterCompactBoundary,
+  applyToolResultBudget,
+  contextCollapse,
+  checkTokenBudget,
+  estimateMessagesTokens,
+} from './context/pipeline.js';
+import { injectRagContext } from './context/rag-inject.js';
 import { MemoryManager } from './context/memory.js';
 import { PlanModeController } from './plan-controller.js';
+import { buildFullSystemPrompt, buildSystemPromptLayers, mergeSystemPromptLayers } from './context/system-prompt.js';
+import { DiagnosticsCollector } from './diagnostics.js';
+import { SessionMemoryLite } from './context/session-memory.js';
+import { TranscriptStore } from './context/transcript.js';
+import { SessionMemoryPersist } from './context/session-memory-persist.js';
 
 // ============================================================
 // 运行时配置
@@ -53,10 +82,14 @@ export interface RuntimeConfig {
   maxRetries?: number;
   /** RAG搜索引擎（可选，设置后支持自动上下文增强） */
   ragSearchProvider?: RAGSearchProvider;
+  /** transcript JSONL 目录。 */
+  transcriptDir?: string;
+  /** session summary Markdown 目录。 */
+  sessionMemoryDir?: string;
 }
 
 /** 默认运行时配置 */
-const DEFAULT_RUNTIME_CONFIG: Required<Omit<RuntimeConfig, 'ragSearchProvider'>> & { ragSearchProvider: RAGSearchProvider | undefined } = {
+const DEFAULT_RUNTIME_CONFIG: Required<Pick<RuntimeConfig, 'maxTurns' | 'maxRetries'>> & { ragSearchProvider: RAGSearchProvider | undefined } = {
   maxTurns: 20,
   maxRetries: 1,
   ragSearchProvider: undefined,
@@ -86,14 +119,19 @@ export class AgentRuntime {
   /** 计划控制器 */
   private planController: PlanModeController;
   /** 运行时配置 */
-  private config: Required<Omit<RuntimeConfig, 'ragSearchProvider'>> & { ragSearchProvider?: RAGSearchProvider };
-
-  /** RAG自动检索触发关键词 */
-  private static readonly RAG_TRIGGER_KEYWORDS = [
-    '参考', '检索', '搜索', '查找', '知识库', '资料', '素材',
-    '查询', '寻找', '文库', '文档库', '相关内容', '相关文档',
-    '参考文档', '参考文献', '参考资料', '查找资料',
-  ];
+  private config: Required<Pick<RuntimeConfig, 'maxTurns' | 'maxRetries'>> & {
+    ragSearchProvider?: RAGSearchProvider;
+    transcriptDir?: string;
+    sessionMemoryDir?: string;
+  };
+  /** 转录持久化器。 */
+  private transcriptStore: TranscriptStore | null;
+  /** 会话摘要持久化器。 */
+  private sessionMemoryPersist: SessionMemoryPersist | null;
+  /** 轻量会话摘要器。 */
+  private sessionMemoryBySession: Map<string, SessionMemoryLite>;
+  /** 会话级摘要累计状态。 */
+  private sessionSummaryTotals: Map<string, { turns: number; tokens: number }>;
 
   /**
    * 创建Agent运行时
@@ -117,6 +155,10 @@ export class AgentRuntime {
     this.memoryManager = new MemoryManager(db);
     this.planController = new PlanModeController();
     this.config = { ...DEFAULT_RUNTIME_CONFIG, ...config };
+    this.transcriptStore = config.transcriptDir ? new TranscriptStore(config.transcriptDir) : null;
+    this.sessionMemoryPersist = config.sessionMemoryDir ? new SessionMemoryPersist(config.sessionMemoryDir) : null;
+    this.sessionMemoryBySession = new Map();
+    this.sessionSummaryTotals = new Map();
   }
 
   /**
@@ -128,7 +170,16 @@ export class AgentRuntime {
   }
 
   /**
+   * 中断当前运行。
+   * 当前版本通过状态标记让外层桥接与迭代器退出保持一致。
+   */
+  abortCurrentRun(): void {
+    this.planController.cancelPlan();
+  }
+
+  /**
    * 运行一个Agent轮次 - 核心agentic loop
+   * 使用 QueryLoopState 不可变状态 + Per-Iteration Pipeline
    * @param sessionId - 会话ID
    * @param input - 用户输入
    * @param mode - Agent模式
@@ -139,10 +190,12 @@ export class AgentRuntime {
     input: string,
     mode: AgentMode = 'chat',
   ): AsyncGenerator<AgentEventEnvelope> {
-    // 初始化循环状态
-    const loopState = createLoopState(sessionId, mode);
     const turnId = `turn_${Date.now()}`;
     let sequence = 0;
+
+    // 初始化诊断收集器
+    const diagnostics = new DiagnosticsCollector();
+    diagnostics.recordSection('init');
 
     // 加载上下文
     const memories = this.memoryManager.loadMemories();
@@ -150,254 +203,503 @@ export class AgentRuntime {
     const modelConfig = this.provider.getConfig();
     const contextLength = await this.provider.getContextLength() ?? DEFAULT_CONTEXT_LENGTH;
 
-    // 分配上下文预算
-    const budget = allocateBudget(contextLength, mode);
+    // 使用 BudgetManager 动态分配预算
+    const budgetManager = new BudgetManager(contextLength, mode);
+    const budget = budgetManager.getBudget();
 
-    // 构建运行时上下文
-    const runtimeCtx = createRuntimeContext({
-      sessionId,
-      mode,
+    // 初始化不可变查询循环状态
+    const runId = `run_${Date.now()}`;
+    let state = createQueryLoopState(sessionId, mode, budget, memories, input, runId);
+    state = updateQueryLoopState(state, {
+      activePlan: this.planController.getActivePlan(),
       planPhase: this.planController.getPhase(),
-      activePlanId: null,
-      knowledgeBaseIds: [],
-      activeFiles: [],
-      permissions: {},
     });
 
-    // 构建消息列表
-    // 记录已有消息的ID集合，用于后续持久化时排除
-    const existingMessageIds = new Set(recentMessages.map(m => m.id));
-    const messages = this.buildMessages(recentMessages, input, mode, memories, budget);
+    const planUnsub = this.planController.onEvent((event) => {
+      if (event.type === 'plan_generated') {
+        state = updateQueryLoopState(state, {
+          activePlan: event.plan,
+          planPhase: 'PLAN_COLLECT',
+          diagnostics: {
+            ...state.diagnostics,
+            planTransition: 'PLAN_COLLECT',
+          },
+        });
+      } else if (event.type === 'phase_change') {
+        state = updateQueryLoopState(state, {
+          planPhase: event.to,
+          diagnostics: {
+            ...state.diagnostics,
+            planTransition: `${event.from}->${event.to}`,
+          },
+        });
+      } else if (event.type === 'plan_approved') {
+        state = updateQueryLoopState(state, {
+          activePlan: event.plan,
+        });
+      } else if (event.type === 'plan_cancelled') {
+        state = updateQueryLoopState(state, {
+          activePlan: null,
+        });
+      }
+    });
 
-    // RAG自动上下文增强：当用户输入包含检索触发关键词时，自动从知识库检索相关内容
-    const ragContext = await this.enrichWithRAG(input, sessionId);
-    if (ragContext) {
-      // 在用户消息之前插入RAG检索结果作为上下文
-      const ragMessage: Message = {
-        id: this.generateMsgId(),
-        role: 'system',
-        content: ragContext,
-        tokenCount: estimateTokens(ragContext),
-        timestamp: Date.now(),
-      };
-      // 插入到用户消息之前（messages最后一条是用户消息）
-      messages.splice(messages.length - 1, 0, ragMessage);
+    try {
+      // 创建 Agent Run 记录
+      try {
+        createAgentRun(this.db, { id: runId, sessionId, mode });
+      } catch {
+        // 创建 run 记录失败不影响主流程
+      }
 
-      yield this.createEvent(sessionId, turnId, sequence++, 'rag_enrich', {
-        query: input.slice(0, 100),
-        injected: true,
+      yield this.createEvent(state, turnId, sequence++, 'run_status', {
+        runId,
+        status: 'running',
       });
-    }
 
-    // Agentic loop
-    let loopCount = 0;
-    let continueLoop = true;
+      // 构建运行时上下文（兼容旧逻辑）
+      const runtimeCtx = createRuntimeContext({
+        sessionId,
+        mode,
+        planPhase: this.planController.getPhase(),
+        activePlanId: null,
+        knowledgeBaseIds: [],
+        activeFiles: [],
+        permissions: {},
+      });
 
-    while (continueLoop && loopCount < this.config.maxTurns) {
-      loopCount++;
+      // 构建消息列表
+      const existingMessageIds = new Set(recentMessages.map(m => m.id));
+      state = updateQueryLoopState(state, {
+        messages: this.buildMessages(recentMessages, input, mode, memories, budget, sessionId),
+      });
 
-      // 1. 评估并执行压缩
-      const compactAssessment = assessCompactNeed(messages, budget);
-      if (compactAssessment.needed) {
-        const compactResult = await compactContext(messages, this.provider, memories, budget);
-        messages.length = 0;
-        messages.push(...compactResult.messages);
+      // RAG 预算感知注入（pipeline 内部，计入 budget）
+      const ragResult = await injectRagContext(
+        input,
+        mode,
+        this.planController.getPhase(),
+        this.config.ragSearchProvider,
+        budget,
+      );
 
-        yield this.createEvent(sessionId, turnId, sequence++, 'compact', {
-          level: compactResult.level,
-          strategy: compactResult.strategy,
-          freedTokens: compactResult.freedTokens,
+      if (ragResult.message) {
+        // 将 RAG 消息插入到用户消息之前
+        const msgs = [...state.messages];
+        let lastUserIdx = -1;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role === 'user') { lastUserIdx = i; break; }
+        }
+        if (lastUserIdx >= 0) {
+          msgs.splice(lastUserIdx, 0, ragResult.message);
+        } else {
+          msgs.splice(msgs.length - 1, 0, ragResult.message);
+        }
+
+        // RAG token 从 conversationHistory 预算中扣除（对齐二期计划3.2）
+        const adjustedBudget: ContextBudget = {
+          ...budget,
+          conversationHistory: Math.max(0, budget.conversationHistory - ragResult.usedTokens),
+        };
+
+        state = updateQueryLoopState(state, {
+          messages: msgs,
+          budget: adjustedBudget,
+          ragChunks: ragResult.injectedChunks,
+          diagnostics: {
+            ...state.diagnostics,
+            ragHitCount: ragResult.injectedChunks.length,
+            ragInjectedTokens: ragResult.usedTokens,
+            ragTokens: ragResult.usedTokens,
+          },
+        });
+
+        yield this.createEvent(sessionId, turnId, sequence++, 'rag_enrich', {
+          query: input.slice(0, 100),
+          injected: true,
+          chunkCount: ragResult.injectedChunks.length,
+          usedTokens: ragResult.usedTokens,
+          triggerReason: ragResult.triggerReason,
         });
       }
 
-      // 2. 选择可用工具
-      const availableTools = this.planController.getToolsForPhase(this.registry);
-      const toolDefinitions = availableTools.map(toToolDefinition);
+      // Agentic loop — 不可变状态重建
+      let loopCount = 0;
 
-      // 3. 调用模型（流式）
-      let assistantContent = '';
-      let toolCallResults: ToolCallResult[] = [];
-      let usageData = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      while (
+        state.transition !== 'completed' &&
+        state.transition !== 'aborted' &&
+        state.transition !== 'max_turns' &&
+        state.transition !== 'prompt_too_long' &&
+        state.transition !== 'model_error' &&
+        loopCount < this.config.maxTurns
+      ) {
+        loopCount++;
 
-      try {
-        const chatMessages = this.toChatMessages(messages);
-        const stream = this.provider.chat({
-          messages: chatMessages,
-          tools: toolDefinitions.length > 0 ? toolDefinitions : undefined,
-          temperature: modelConfig.temperature,
-          maxTokens: budget.maxCompletionTokens,
-          stream: true,
+        // 检测 approved plan 并启动执行
+        if (state.activePlan?.status === 'approved' && state.mode === 'execute') {
+          this.planController.startExecution();
+          state = updateQueryLoopState(state, {
+            activePlan: this.planController.getActivePlan(),
+            planPhase: this.planController.getPhase(),
+          });
+        }
+
+        // 每轮重置动态字段
+        state = updateQueryLoopState(state, {
+          assistantContent: '',
+          hasToolCalls: false,
+          hasError: false,
+          retried: false,
         });
 
-        for await (const event of stream) {
-          if (event.type === 'token') {
-            assistantContent += event.data;
-            yield this.createEvent(sessionId, turnId, sequence++, 'token', { text: event.data });
-          } else if (event.type === 'thinking') {
-            yield this.createEvent(sessionId, turnId, sequence++, 'thinking', { text: event.data });
-          } else if (event.type === 'tool_call') {
-            toolCallResults.push(event.data);
-          } else if (event.type === 'usage') {
-            usageData = event.data;
-          } else if (event.type === 'done') {
-            break;
-          } else if (event.type === 'error') {
-            const errorResult = await this.handleError(
-              new Error(event.data),
-              messages,
-              runtimeCtx,
-              memories,
-              budget,
-            );
-            if (errorResult.retried) {
-              continue;
-            }
-            yield this.createEvent(sessionId, turnId, sequence++, 'error', {
-              code: 'MODEL_ERROR',
-              message: event.data,
-              recoverable: false,
+        // ---- Per-Iteration Pipeline ----
+
+        // 1. 获取 compact boundary 之后的消息
+        const messagesAfterBoundary = getMessagesAfterCompactBoundary(state);
+
+        // 2. 应用工具结果预算
+        const budgetedMessages = applyToolResultBudget(messagesAfterBoundary, state.budget);
+
+        // 3. 微压缩（清理过时 tool_result）
+        const microResult = microCompact(budgetedMessages);
+
+        // 4. 上下文折叠（合并连续 assistant 消息）
+        const collapsedMessages = contextCollapse(microResult.messages);
+
+        // 5. 自动压缩评估（带 circuit breaker，对齐 Claude Code autoCompact）
+        const autoCompactResult = await autoCompactIfNeeded(
+          collapsedMessages,
+          this.provider,
+          memories,
+          state.budget,
+          state.autoCompactTracking,
+          state.activePlan,
+        );
+
+        if (autoCompactResult.didCompact) {
+          state = updateQueryLoopState(state, {
+            messages: autoCompactResult.messages,
+            compactCount: state.compactCount + 1,
+            autoCompactTracking: autoCompactResult.tracking,
+          });
+
+          // 记录诊断（不可变更新）
+          diagnostics.recordCompact(true, autoCompactResult.freedTokens);
+
+          yield this.createEvent(sessionId, turnId, sequence++, 'compact', {
+            level: 2,
+            strategy: 'summary',
+            freedTokens: autoCompactResult.freedTokens,
+          });
+
+          // 5.5 Post-Compact Recovery（对齐 Claude Code）
+          const recoveryResult = await recoverFromCompact(state, this.config.ragSearchProvider ?? null);
+          if (recoveryResult.memoryInjected || recoveryResult.ragRehydrated || recoveryResult.planInjected) {
+            state = recoveryResult.state;
+            yield this.createEvent(sessionId, turnId, sequence++, 'recovery', {
+              memoryInjected: recoveryResult.memoryInjected,
+              ragRehydrated: recoveryResult.ragRehydrated,
+              planInjected: recoveryResult.planInjected,
+              totalRecoveryTokens: recoveryResult.totalRecoveryTokens,
             });
-            continueLoop = false;
+          }
+        } else {
+          // 即使没有自动压缩，也需要更新 tracking（circuit breaker 状态可能变化）
+          state = updateQueryLoopState(state, {
+            autoCompactTracking: autoCompactResult.tracking,
+          });
+        }
+
+        // 6. Token 阻塞限制检查
+        const estimatedTokens = estimateMessagesTokens(state.messages);
+        if (estimatedTokens > state.budget.total * 0.95) {
+          state = updateQueryLoopState(state, { transition: 'prompt_too_long' });
+          break;
+        }
+
+        // 7. 选择可用工具
+        const availableTools = this.planController.getToolsForPhase(this.registry);
+        const toolDefinitions = availableTools.map(toToolDefinition);
+
+        // 8. 调用模型（流式）
+        let assistantContent = '';
+        let toolCallResults: ToolCallResult[] = [];
+        let usageData = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+        try {
+          const chatMessages = this.toChatMessages(state.messages);
+          const stream = this.provider.chat({
+            messages: chatMessages,
+            tools: toolDefinitions.length > 0 ? toolDefinitions : undefined,
+            temperature: modelConfig.temperature,
+            maxTokens: state.budget.maxCompletionTokens,
+            stream: true,
+          });
+
+          for await (const event of stream) {
+            if (event.type === 'token') {
+              assistantContent += event.data;
+              yield this.createEvent(sessionId, turnId, sequence++, 'token', { text: event.data });
+            } else if (event.type === 'thinking') {
+              yield this.createEvent(sessionId, turnId, sequence++, 'thinking', { text: event.data });
+            } else if (event.type === 'tool_call') {
+              toolCallResults.push(event.data);
+            } else if (event.type === 'usage') {
+              usageData = event.data;
+            } else if (event.type === 'done') {
+              break;
+            } else if (event.type === 'error') {
+              const errorResult = await this.handleError(new Error(event.data), state);
+              if (errorResult.retried) {
+                if (errorResult.newState) state = errorResult.newState;
+                continue;
+              }
+              yield this.createEvent(sessionId, turnId, sequence++, 'error', {
+                code: 'MODEL_ERROR',
+                message: event.data,
+                recoverable: false,
+              });
+              state = updateQueryLoopState(state, { transition: 'model_error' });
+              break;
+            }
+          }
+        } catch (error) {
+          const errorResult = await this.handleError(error, state);
+
+          if (errorResult.retried) {
+            if (errorResult.newState) state = errorResult.newState;
+            continue;
+          }
+
+          yield this.createEvent(sessionId, turnId, sequence++, 'error', {
+            code: error instanceof ContextLengthExceededError ? 'CONTEXT_LENGTH_EXCEEDED' : 'MODEL_ERROR',
+            message: error instanceof Error ? error.message : String(error),
+            recoverable: error instanceof ContextLengthExceededError,
+          });
+
+          if (!isContextOverflowError(error)) {
+            state = updateQueryLoopState(state, { transition: 'model_error' });
             break;
           }
         }
-      } catch (error) {
-        const errorResult = await this.handleError(
-          error,
-          messages,
-          runtimeCtx,
-          memories,
-          budget,
+
+        // 9. 解析工具调用
+        const toolCalls = this.parseToolCalls(toolCallResults);
+
+        // 10. 添加assistant消息
+        const assistantMessage: Message = {
+          id: this.generateMsgId(),
+          role: 'assistant',
+          content: assistantContent,
+          eventType: toolCalls.length > 0 ? 'tool_call' : 'text',
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          tokenCount: estimateTokens(assistantContent),
+          timestamp: Date.now(),
+        };
+        state = updateQueryLoopState(state, {
+          messages: [...state.messages, assistantMessage],
+          assistantContent,
+          hasToolCalls: toolCalls.length > 0,
+          totalTokensUsed: state.totalTokensUsed + usageData.totalTokens,
+        });
+
+        // 记录诊断（不可变更新）
+        state = updateQueryLoopState(state, {
+          diagnostics: {
+            ...state.diagnostics,
+            hadToolCall: toolCalls.length > 0,
+            completionTokens: usageData.completionTokens,
+          },
+        });
+
+        // 11. 执行工具（串行）
+        if (toolCalls.length > 0) {
+          const toolContext = {
+            sessionId,
+            mode,
+            permissions: runtimeCtx.permissions,
+          };
+
+          // 产出 tool_start 事件
+          for (const tc of toolCalls) {
+            yield this.createEvent(sessionId, turnId, sequence++, 'tool_start', {
+              name: tc.name,
+              input: tc.arguments,
+            });
+          }
+
+          // 串行执行
+          const results = await this.executor.executeAll(toolCalls, toolContext);
+
+          // 追踪工具执行是否有错误
+          let anyError = false;
+          const newMessages = [...state.messages];
+
+          for (const result of results) {
+            if (result.isError) anyError = true;
+
+            const toolMessage: Message = {
+              id: this.generateMsgId(),
+              role: 'tool',
+              content: typeof result.output === 'string'
+                ? result.output
+                : JSON.stringify(result.output),
+              eventType: 'tool_result',
+              toolCallId: result.call.id,
+              toolName: result.call.name,
+              tokenCount: estimateTokens(
+                typeof result.output === 'string' ? result.output : JSON.stringify(result.output),
+              ),
+              timestamp: Date.now(),
+            };
+            newMessages.push(toolMessage);
+
+            yield this.createEvent(sessionId, turnId, sequence++, 'tool_result', {
+              name: result.call.name,
+              output: result.output,
+              isError: result.isError,
+              summary: result.summary,
+            });
+          }
+
+          state = updateQueryLoopState(state, {
+            messages: newMessages,
+            hasError: anyError,
+            retried: anyError && !state.retried ? true : state.retried,
+          });
+        }
+
+        // 12. 路由决策（直接使用 QueryLoopState）
+        const routeResult = routeAfterQueryLoop(
+          state,
+          this.planController.getActivePlan(),
         );
 
-        if (errorResult.retried) {
-          continue;
+        // 产出 mode_suggestion 事件
+        if (state.mode === 'chat' && !state.hasToolCalls && state.userInput) {
+          if (shouldSuggestPlanMode(state.userInput)) {
+            yield this.createEvent(sessionId, turnId, sequence++, 'mode_suggestion', {
+              suggestedMode: 'plan',
+              reason: '检测到公文写作需求，建议进入计划模式',
+            });
+          }
         }
 
-        yield this.createEvent(sessionId, turnId, sequence++, 'error', {
-          code: error instanceof ContextLengthExceededError ? 'CONTEXT_LENGTH_EXCEEDED' : 'MODEL_ERROR',
-          message: error instanceof Error ? error.message : String(error),
-          recoverable: error instanceof ContextLengthExceededError,
-        });
+        // 产出模式/阶段变更事件
+        if (routeResult.modeSwitch) {
+          state = updateQueryLoopState(state, {
+            mode: routeResult.modeSwitch,
+          });
+          yield this.createEvent(sessionId, turnId, sequence++, 'mode_change', {
+            mode: routeResult.modeSwitch,
+          });
+        }
+        if (routeResult.phaseSwitch) {
+          state = updateQueryLoopState(state, {
+            planPhase: routeResult.phaseSwitch,
+          });
+          yield this.createEvent(sessionId, turnId, sequence++, 'phase_change', {
+            phase: routeResult.phaseSwitch,
+          });
+        }
 
-        if (!isContextOverflowError(error)) {
-          continueLoop = false;
+        // 13. 持久化当前轮次
+        this.persistMessages(sessionId, turnId, state.messages, existingMessageIds);
+
+        await this.persistSessionMemoryIfNeeded(state);
+
+        // 14. Token 预算检查（收益递减检测）
+        const budgetCheck = checkTokenBudget(state, usageData.completionTokens);
+        if (budgetCheck.shouldStop) {
+          state = updateQueryLoopState(state, {
+            transition: 'completed',
+            diagnostics: { ...state.diagnostics, terminalReason: 'completed' },
+          });
           break;
         }
-      }
 
-      // 4. 解析工具调用
-      const toolCalls = this.parseToolCalls(toolCallResults);
+        // 15. 不可变更新 — 进入下一轮
+        state = updateQueryLoopState(state, {
+          turnCount: state.turnCount + 1,
+          transition: routeResult.decision === 'Done' ? 'completed' :
+                      routeResult.decision === 'WaitApproval' ? 'completed' :
+                      routeResult.transition,
+        });
 
-      // 5. 添加assistant消息
-      const assistantMessage: Message = {
-        id: this.generateMsgId(),
-        role: 'assistant',
-        content: assistantContent,
-        eventType: toolCalls.length > 0 ? 'tool_call' : 'text',
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        tokenCount: estimateTokens(assistantContent),
-        timestamp: Date.now(),
-      };
-      messages.push(assistantMessage);
-
-      // 6. 执行工具（串行）
-      if (toolCalls.length > 0) {
-        const toolContext = {
-          sessionId,
-          mode,
-          permissions: runtimeCtx.permissions,
-        };
-
-        // 产出 tool_start 事件
-        for (const tc of toolCalls) {
-          yield this.createEvent(sessionId, turnId, sequence++, 'tool_start', {
-            name: tc.name,
-            input: tc.arguments,
+        // 判断是否继续
+        if (routeResult.decision === 'Done') {
+          state = updateQueryLoopState(state, {
+            diagnostics: { ...state.diagnostics, terminalReason: 'completed' },
           });
-        }
-
-        // 串行执行
-        const results = await this.executor.executeAll(toolCalls, toolContext);
-
-        // 处理结果
-        for (const result of results) {
-          const toolMessage: Message = {
-            id: this.generateMsgId(),
-            role: 'tool',
-            content: typeof result.output === 'string'
-              ? result.output
-              : JSON.stringify(result.output),
-            eventType: 'tool_result',
-            toolCallId: result.call.id,
-            toolName: result.call.name, // Ollama需要tool角色消息包含工具名称
-            tokenCount: estimateTokens(
-              typeof result.output === 'string' ? result.output : JSON.stringify(result.output),
-            ),
-            timestamp: Date.now(),
-          };
-          messages.push(toolMessage);
-
-          yield this.createEvent(sessionId, turnId, sequence++, 'tool_result', {
-            name: result.call.name,
-            output: result.output,
-            isError: result.isError,
-            summary: result.summary,
+          break;
+        } else if (routeResult.decision === 'WaitApproval') {
+          yield this.createEvent(sessionId, turnId, sequence++, 'permission_request', {
+            toolName: 'plan_approve',
+            input: { planId: this.planController.getActivePlan()?.id ?? '' },
+            safety: 'read_only',
+            reason: '计划已生成，等待用户审查和批准',
           });
+          state = updateQueryLoopState(state, {
+            diagnostics: { ...state.diagnostics, terminalReason: 'completed' },
+          });
+          break;
+        } else if (routeResult.decision === 'EnterPlan') {
+          if (routeResult.modeSwitch === 'plan') {
+            this.planController.enterPlanMode(sessionId);
+            const activePlan = this.planController.getActivePlan();
+            state = updateQueryLoopState(state, {
+              activePlan,
+              mode: 'plan',
+            });
+          }
+          // 继续循环
         }
       }
 
-      // 7. 路由决策
-      const routeResult = routeAfterResponse(
-        loopState,
-        toolCalls.length > 0,
-        this.planController.getActivePlan(),
+      // 循环退出后处理：max_turns 检测（对齐 Claude Code 的 max_turns 终止）
+      if (loopCount >= this.config.maxTurns && state.transition !== 'completed' && state.transition !== 'prompt_too_long' && state.transition !== 'model_error') {
+        state = updateQueryLoopState(state, {
+          transition: 'max_turns',
+          diagnostics: { ...state.diagnostics, terminalReason: 'max_turns' },
+        });
+      }
+
+      // 持久化诊断数据到 DB
+      diagnostics.recordTerminal(
+        (state.diagnostics.terminalReason as RunTerminalReason) ?? 'completed',
       );
+      diagnostics.persist(this.db, runId);
+      await this.persistSessionMemoryIfNeeded(state);
 
-      // 更新循环状态
-      loopState.currentTurn = createTurnState(turnId, input);
-      loopState.currentTurn.assistantContent = assistantContent;
-      loopState.currentTurn.toolCalls = toolCalls;
-      loopState.currentTurn.tokensUsed = usageData.totalTokens;
-      loopState.decision = routeResult.decision;
-
-      // 产出模式/阶段变更事件
-      if (routeResult.modeSwitch) {
-        yield this.createEvent(sessionId, turnId, sequence++, 'mode_change', {
-          mode: routeResult.modeSwitch,
-        });
-      }
-      if (routeResult.phaseSwitch) {
-        yield this.createEvent(sessionId, turnId, sequence++, 'phase_change', {
-          phase: routeResult.phaseSwitch,
-        });
+      // 结束 Agent Run 记录
+      try {
+        const terminalReason = state.diagnostics.terminalReason ?? 'completed';
+        const status = terminalReason === 'aborted_streaming' || terminalReason === 'aborted_tools'
+          ? 'aborted'
+          : terminalReason === 'completed'
+          ? 'completed'
+          : 'failed';
+        endAgentRun(this.db, runId, status, terminalReason, state.totalTokensUsed);
+      } catch {
+        // 结束 run 记录失败不影响主流程
       }
 
-      // 8. 持久化当前轮次
-      this.persistMessages(sessionId, turnId, messages, existingMessageIds);
+      yield this.createEvent(state, turnId, sequence++, 'run_status', {
+        runId,
+        status: state.diagnostics.terminalReason === 'aborted_streaming' || state.diagnostics.terminalReason === 'aborted_tools'
+          ? 'aborted'
+          : state.diagnostics.terminalReason === 'completed'
+          ? 'completed'
+          : 'failed',
+        terminalReason: state.diagnostics.terminalReason ?? 'completed',
+      });
 
-      // 9. 判断是否继续
-      if (routeResult.decision === 'Done') {
-        continueLoop = false;
-      } else if (routeResult.decision === 'WaitApproval') {
-        // 等待用户批准，暂停循环
-        yield this.createEvent(sessionId, turnId, sequence++, 'permission_request', {
-          toolName: 'plan_approve',
-          input: { planId: this.planController.getActivePlan()?.id ?? '' },
-          safety: 'read_only',
-          reason: '计划已生成，等待用户审查和批准',
-        });
-        continueLoop = false;
-      } else if (routeResult.decision === 'EnterPlan') {
-        if (routeResult.modeSwitch === 'plan') {
-          this.planController.enterPlanMode(sessionId);
-        }
-        // 继续循环
-      }
+      // 产出完成事件
+      yield this.createEvent(state, turnId, sequence++, 'done', null);
+    } finally {
+      planUnsub();
     }
-
-    // 产出完成事件
-    yield this.createEvent(sessionId, turnId, sequence++, 'done', null);
   }
 
   // ============================================================
@@ -419,6 +721,7 @@ export class AgentRuntime {
     mode: AgentMode,
     memories: Memory[],
     budget: ContextBudget,
+    sessionId?: string,
   ): Message[] {
     const messages: Message[] = [];
 
@@ -431,6 +734,20 @@ export class AgentRuntime {
       tokenCount: estimateTokens(systemPrompt),
       timestamp: Date.now(),
     });
+
+    if (sessionId && this.sessionMemoryPersist) {
+      const persistedSummary = this.sessionMemoryPersist.load(sessionId);
+      if (persistedSummary) {
+        messages.push({
+          id: `session-summary-${sessionId}`,
+          role: 'system',
+          content: persistedSummary,
+          eventType: 'summary',
+          tokenCount: estimateTokens(persistedSummary),
+          timestamp: Date.now(),
+        });
+      }
+    }
 
     // 历史消息（按预算截断）——将MessageRecord转换为Message
     const historyBudget = budget.conversationHistory;
@@ -466,59 +783,14 @@ export class AgentRuntime {
   }
 
   /**
-   * 构建系统提示
+   * 构建系统提示（分层版本 — 对齐 Claude Code 的 static + dynamic prompt 模式）
+   * 5 段：role / mode / safety / toolContract / outputContract
    * @param mode - Agent模式
    * @param memories - 显式记忆
    * @returns 系统提示文本
    */
   private buildSystemPrompt(mode: AgentMode, memories: Memory[]): string {
-    const parts: string[] = [];
-
-    // 基础角色定义
-    parts.push(`你是WorkAgent，一个专业的公文写作助手。你可以帮助用户撰写、编辑和生成各类公文。
-
-## 工具使用指南
-
-你必须按照以下流程正确使用工具：
-
-### 1. 文档读取流程
-当用户提到"参考文档"、"参考文件"、"资料目录"等，需要读取文档内容时：
-- **直接使用 doc_read 工具**：它可以接受文件路径或目录路径。传入目录路径时会自动扫描其中所有支持的文档文件（docx/pptx/pdf/txt/md）并批量读取。
-- 也可以先用 file_list 列出目录内容，再选择性地用 doc_read 读取特定文件。
-
-### 2. 知识库与RAG检索流程
-当用户需要基于已有知识库内容写作或查询时：
-- **知识入库**：如果文档尚未加入知识库，先使用 knowledge_add 将文件路径列表添加到知识库建立索引。
-- **检索知识**：使用 rag_search 从知识库中检索与查询相关的文档片段，获取带来源引用的文本内容。
-
-### 3. 公文写作流程
-当用户需要撰写公文时：
-- **收集素材**：先读取参考文档（doc_read）或检索知识库（rag_search），获取相关素材。
-- **生成提纲**：使用 draft_outline 生成公文大纲。
-- **撰写文档**：使用 doc_write 生成最终文档文件。
-
-### 重要提示
-- 始终优先读取用户提供的参考文档内容，不要凭空编造素材。
-- 当用户提供目录路径时，直接用 doc_read 传入目录路径即可批量读取。
-- 知识库检索（rag_search）仅在文档已通过 knowledge_add 入库后才能检索到内容。
-- 如果用户没有明确要求检索知识库，但提到了参考文档，应先读取文档内容，而非直接写作。`);
-
-    // 模式说明
-    if (mode === 'plan') {
-      parts.push('当前处于计划模式。你需要先收集信息、制定计划，生成提纲后等待用户确认。不能自行执行写文件等操作。');
-    } else if (mode === 'execute') {
-      parts.push('当前处于执行模式。按照已批准的计划执行步骤，生成公文草稿和最终文档。');
-    } else {
-      parts.push('当前处于对话模式。你可以回答问题、检索知识库、读取文档等。涉及复杂公文写作时，建议进入计划模式。');
-    }
-
-    // 注入记忆
-    const memoryPrompt = this.memoryManager.formatMemoriesForPrompt(memories);
-    if (memoryPrompt) {
-      parts.push(memoryPrompt);
-    }
-
-    return parts.join('\n\n');
+    return buildFullSystemPrompt(mode, memories);
   }
 
   /**
@@ -574,29 +846,92 @@ export class AgentRuntime {
 
   /**
    * 错误处理 - 根据错误类型决定恢复策略
+   * 不可变：返回新的 state，不修改原状态
+   * 恢复路径（对齐 Claude Code）：
+   * 1. 上下文超限 → reactive compact → 重试
+   * 2. reactive compact 后仍超限 → drain collapse → 重试
+   * 3. max_output_tokens → 注入恢复消息 → 重试（最多3次）
+   * 4. 瞬态错误（网络超时/模型临时不可用） → withheld retry（最多2次）
+   * 5. 其他错误 → 不重试
    * @param error - 错误对象
-   * @param messages - 当前消息列表
-   * @param context - 运行时上下文
-   * @param memories - 显式记忆
-   * @param budget - 上下文预算
-   * @returns 错误处理结果
+   * @param state - 当前查询循环状态
+   * @returns 错误处理结果（包含可能的新状态）
    */
   private async handleError(
     error: unknown,
-    messages: Message[],
-    context: RuntimeContext,
-    memories: Memory[],
-    budget: ContextBudget,
-  ): Promise<{ retried: boolean; errorMessage?: string }> {
-    // 上下文超限：触发reactive压缩后重试
+    state: QueryLoopState,
+  ): Promise<{ retried: boolean; errorMessage?: string; newState?: QueryLoopState }> {
+    // 1. 上下文超限：触发reactive压缩后重试
     if (isContextOverflowError(error)) {
-      const compactResult = await reactiveCompact(messages, this.provider, memories);
-      messages.length = 0;
-      messages.push(...compactResult.messages);
-      return { retried: true };
+      // 已尝试过 reactive compact 但仍超限 → drain collapse
+      if (state.hasAttemptedReactiveCompact && !state.hasAttemptedDrainCollapse) {
+        const drainResult = drainCollapse(state.messages, state.memories, state.activePlan);
+        const newState = updateQueryLoopState(state, {
+          messages: drainResult.messages,
+          compactCount: state.compactCount + 1,
+          hasAttemptedDrainCollapse: true,
+          diagnostics: {
+            ...state.diagnostics,
+            compactOccurred: true,
+            compactFreedTokens: (state.diagnostics.compactFreedTokens ?? 0) + drainResult.freedTokens,
+          },
+        });
+        return { retried: true, newState };
+      }
+
+      // 首次超限：reactive compact
+      if (!state.hasAttemptedReactiveCompact) {
+        const compactResult = await reactiveCompact(state.messages, this.provider, state.memories, state.activePlan);
+        const newState = updateQueryLoopState(state, {
+          messages: compactResult.messages,
+          compactCount: state.compactCount + 1,
+          hasAttemptedReactiveCompact: true,
+          diagnostics: {
+            ...state.diagnostics,
+            compactOccurred: true,
+            compactFreedTokens: compactResult.freedTokens,
+          },
+        });
+        return { retried: true, newState };
+      }
+
+      // reactive + drain 都已尝试，仍然超限 → graceful stop
+      return { retried: false, errorMessage: '上下文空间耗尽，无法继续。请开启新对话。' };
     }
 
-    // AgentError：使用类型化恢复策略
+    // 2. max_output_tokens 恢复（对齐 Claude Code 的 token escalation）
+    // 检测方式：错误消息包含 max_output_tokens 或 completion_tokens 超限
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const isMaxOutputTokensError =
+      errorMsg.toLowerCase().includes('max_output_tokens') ||
+      errorMsg.toLowerCase().includes('max output tokens') ||
+      errorMsg.toLowerCase().includes('completion tokens exceeded');
+
+    if (isMaxOutputTokensError && state.maxOutputTokensRecoveryCount < 3) {
+      // 注入恢复用户消息，让模型知道需要继续
+      const recoveryMessage: Message = {
+        id: this.generateMsgId(),
+        role: 'user',
+        content: '请继续完成你的回复。',
+        tokenCount: estimateTokens('请继续完成你的回复。'),
+        timestamp: Date.now(),
+      };
+      const newState = updateQueryLoopState(state, {
+        messages: [...state.messages, recoveryMessage],
+        maxOutputTokensRecoveryCount: state.maxOutputTokensRecoveryCount + 1,
+      });
+      return { retried: true, newState };
+    }
+
+    // 3. 瞬态错误重试（withheld retry）— 网络超时、模型临时不可用
+    if (this.isTransientError(error) && state.withheldRetryCount < 2) {
+      const newState = updateQueryLoopState(state, {
+        withheldRetryCount: state.withheldRetryCount + 1,
+      });
+      return { retried: true, newState };
+    }
+
+    // 4. AgentError：使用类型化恢复策略
     if (error instanceof Error && 'code' in error) {
       const agentError = error as unknown as { code: string; recoverable: boolean; message: string };
       const strategy = getRecoveryStrategy(agentError as any);
@@ -606,11 +941,32 @@ export class AgentRuntime {
       }
     }
 
-    // 通用错误：不重试
+    // 5. 通用错误：不重试
     return {
       retried: false,
       errorMessage: error instanceof Error ? error.message : String(error),
     };
+  }
+
+  /**
+   * 判断是否为瞬态错误（可重试）。
+   * 包括：网络超时、连接重置、模型临时不可用等。
+   * @param error - 错误对象。
+   * @returns 是否为瞬态错误。
+   */
+  private isTransientError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message.toLowerCase();
+    return (
+      msg.includes('timeout') ||
+      msg.includes('econnreset') ||
+      msg.includes('econnrefused') ||
+      msg.includes('fetch failed') ||
+      msg.includes('network') ||
+      msg.includes('temporarily unavailable') ||
+      msg.includes('rate limit') ||
+      msg.includes('too many requests')
+    );
   }
 
   /** 消息ID计数器，确保同毫秒内ID唯一 */
@@ -665,7 +1021,7 @@ export class AgentRuntime {
   }
 
   /**
-   * 创建事件信封
+   * 创建事件信封（包含 runId）
    * @param sessionId - 会话ID
    * @param turnId - 轮次ID
    * @param sequence - 序号
@@ -674,70 +1030,97 @@ export class AgentRuntime {
    * @returns 事件信封
    */
   private createEvent<T extends AgentEventType>(
-    sessionId: string,
+    state: QueryLoopState | string,
     turnId: string,
     sequence: number,
     type: T,
     data: AgentEventDataMap[T],
   ): AgentEventEnvelope<AgentEventDataMap[T]> {
-    return {
+    const sessionId = typeof state === 'string' ? state : state.sessionId;
+    const runId = typeof state === 'string' ? undefined : state.runId;
+    const envelope: AgentEventEnvelope<AgentEventDataMap[T]> = {
       sessionId,
       turnId,
       sequence,
       type,
       data,
       createdAt: Date.now(),
+      source: 'runtime',
+      runId,
     };
-  }
 
-  /**
-   * RAG自动上下文增强 - 当用户输入包含检索触发关键词时，自动从知识库检索相关内容
-   * @param userInput - 用户输入文本
-   * @param sessionId - 会话ID
-   * @returns RAG增强的上下文文本，如果不需要增强则返回null
-   */
-  private async enrichWithRAG(userInput: string, _sessionId: string): Promise<string | null> {
-    // 检查是否配置了RAG搜索引擎
-    if (!this.config.ragSearchProvider) {
-      return null;
-    }
-
-    // 检查用户输入是否包含RAG触发关键词
-    if (!this.shouldTriggerRAG(userInput)) {
-      return null;
-    }
-
-    try {
-      // 使用用户输入作为查询，从知识库检索相关内容
-      const chunks = await this.config.ragSearchProvider.search(userInput, {
-        topK: 3,
-        minScore: 0.3,
-      });
-
-      if (chunks.length === 0) {
-        return null;
+    if (runId) {
+      try {
+        createAgentEvent(this.db, {
+          runId,
+          sequence,
+          type,
+          data: JSON.stringify(data ?? null),
+          toolName: type === 'tool_result' || type === 'tool_start'
+            ? (data as { name?: string })?.name
+            : undefined,
+          isError: type === 'error' || type === 'recoverable_error',
+        });
+      } catch {
+        // 事件持久化失败不影响主流程
       }
-
-      // 格式化检索结果作为上下文
-      const contextParts = chunks.map((chunk, i) => {
-        const source = chunk.sourceFile || '未知来源';
-        return `[${i + 1}] 来源: ${source}${chunk.locator ? ` (${chunk.locator})` : ''}\n${chunk.content}`;
-      });
-
-      return `以下是知识库中与用户查询相关的内容，请在回答时参考这些素材：\n\n${contextParts.join('\n\n')}`;
-    } catch {
-      // RAG检索失败时不影响正常对话流程
-      return null;
     }
+
+    if (runId && this.transcriptStore) {
+      try {
+        this.transcriptStore.append(runId, envelope);
+      } catch {
+        // transcript 落盘失败不影响主流程
+      }
+    }
+
+    return envelope;
   }
 
   /**
-   * 判断用户输入是否应触发RAG自动检索
-   * @param userInput - 用户输入文本
-   * @returns 是否应触发RAG检索
+   * 按阈值持久化会话摘要。
+   * @param state - 当前查询状态。
    */
-  private shouldTriggerRAG(userInput: string): boolean {
-    const lowerInput = userInput.toLowerCase();
-    return AgentRuntime.RAG_TRIGGER_KEYWORDS.some(keyword => lowerInput.includes(keyword));
+  private async persistSessionMemoryIfNeeded(state: QueryLoopState): Promise<void> {
+    if (!this.sessionMemoryPersist) {
+      return;
+    }
+
+    const current = this.sessionSummaryTotals.get(state.sessionId) ?? { turns: 0, tokens: 0 };
+    const nextTotals = {
+      turns: current.turns + Math.max(1, state.turnCount),
+      tokens: current.tokens + state.totalTokensUsed,
+    };
+    this.sessionSummaryTotals.set(state.sessionId, nextTotals);
+
+    const memory = this.getSessionMemory(state.sessionId);
+    if (!memory.shouldSummarize(nextTotals.turns, nextTotals.tokens)) {
+      return;
+    }
+
+    const summary = await memory.summarize(state.messages, this.provider);
+    if (!summary) {
+      return;
+    }
+
+    memory.updateBaseline(nextTotals.turns, nextTotals.tokens);
+    this.sessionMemoryPersist.save(state.sessionId, summary);
   }
+
+  /**
+   * 获取会话级摘要器。
+   * @param sessionId - 会话 ID。
+   * @returns 会话摘要器实例。
+   */
+  private getSessionMemory(sessionId: string): SessionMemoryLite {
+    const existing = this.sessionMemoryBySession.get(sessionId);
+    if (existing) {
+      return existing;
+    }
+
+    const created = new SessionMemoryLite();
+    this.sessionMemoryBySession.set(sessionId, created);
+    return created;
+  }
+
 }

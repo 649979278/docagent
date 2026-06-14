@@ -1,5 +1,46 @@
 @import "tailwindcss";
 
+/* ===== WorkAgent 设计系统 CSS Variables ===== */
+:root {
+  /* 背景 */
+  --wa-bg-primary: #09090b;     /* zinc-950 */
+  --wa-bg-secondary: #18181b;   /* zinc-900 */
+  --wa-bg-tertiary: #27272a;    /* zinc-800 */
+
+  /* 文字 */
+  --wa-text-primary: #f4f4f5;   /* zinc-100 */
+  --wa-text-secondary: #a1a1aa; /* zinc-400 */
+
+  /* 强调色 */
+  --wa-accent: #f59e0b;         /* amber-500 */
+  --wa-accent-hover: #d97706;   /* amber-600 */
+
+  /* 边框 */
+  --wa-border: #3f3f46;         /* zinc-700 */
+
+  /* 语义色 */
+  --wa-success: #10b981;        /* emerald-500 */
+  --wa-error: #ef4444;          /* red-500 */
+  --wa-info: #3b82f6;           /* blue-500 */
+
+  /* 圆角 */
+  --wa-radius-sm: 4px;
+  --wa-radius-md: 8px;
+  --wa-radius-lg: 12px;
+
+  /* 间距 */
+  --wa-space-xs: 4px;
+  --wa-space-sm: 8px;
+  --wa-space-md: 12px;
+  --wa-space-lg: 16px;
+  --wa-space-xl: 24px;
+
+  /* 字号 */
+  --wa-text-xs: 10px;
+  --wa-text-sm: 12px;
+  --wa-text-base: 14px;
+}
+
 /* ===== 自定义滚动条 - Codex风格 ===== */
 .scrollbar-thin::-webkit-scrollbar {
   width: 4px;

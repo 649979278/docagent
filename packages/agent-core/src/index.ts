@@ -30,12 +30,18 @@ export type { RouteResult } from './router.js';
 // 上下文管理
 export { allocateBudget, estimateTokens, isOverThreshold, truncateRagChunks } from './context/budget.js';
 export { assessCompactNeed, compactContext, reactiveCompact } from './context/compact.js';
+export { drainCollapse } from './context/drain-collapse.js';
+export type { DrainCollapseResult } from './context/drain-collapse.js';
+export { resumeSession } from './context/resume-session.js';
+export type { RunLookupStore, SessionResumeSnapshot } from './context/resume-session.js';
 export { microCompact } from './context/microCompact.js';
 export { summaryCompact } from './context/summaryCompact.js';
 export type { SummaryCompactResult } from './context/summaryCompact.js';
 export { citationRehydrate, extractCitationIds, formatChunksForContext } from './context/citationRehydrate.js';
 export type { CitationRehydrateResult } from './context/citationRehydrate.js';
 export { MemoryManager } from './context/memory.js';
+export { TranscriptStore } from './context/transcript.js';
+export { SessionMemoryPersist } from './context/session-memory-persist.js';
 
 // 计划控制器
 export { PlanModeController } from './plan-controller.js';

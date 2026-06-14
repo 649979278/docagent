@@ -12,8 +12,8 @@ export { PermissionBroker } from './permission.js';
 export type { PermissionPersistence, PermissionRequestCallback } from './permission.js';
 
 // 执行器
-export { ToolExecutor } from './executor.js';
-export type { ExecutorConfig } from './executor.js';
+export { ToolExecutor, partitionToolCalls } from './executor.js';
+export type { ExecutorConfig, PartitionedCalls } from './executor.js';
 
 // RAG检索工具
 export { RagSearchTool } from './rag-search/index.js';

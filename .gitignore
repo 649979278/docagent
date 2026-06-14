@@ -3,6 +3,9 @@ node_modules/
 
 # Build output
 dist/
+build/
+coverage/
+*.lcov
 *.tsbuildinfo
 
 # IDE
@@ -23,17 +26,48 @@ Thumbs.db
 # Logs
 logs/
 *.log
+*.log.*
+pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Database
 *.db
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
 
 # Vector data
 vectors/
+vectors-memory/
 
 # Electron
 out/
+apps/desktop/dist/
+apps/desktop/release/
+apps/desktop/renderer/assets/
+
+# Runtime artifacts
+artifacts/
+transcripts/
+session-memory/
+.tmp-*.db
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Test output
+.vitest/
+test-results/
+playwright-report/
+tests/.tmp/
+tests/tmp/
+
+# Tooling
+.playwright-mcp/
 
 # Package lock (use pnpm-lock.yaml instead)
 package-lock.json

@@ -25,6 +25,12 @@ export interface AgentEventEnvelope<T = unknown> {
   type: AgentEventType;
   data: T;
   createdAt: number;
+  /** 事件协议版本 */
+  schemaVersion?: string;
+  /** 关联的 run ID */
+  runId?: string;
+  /** 事件来源 */
+  source?: 'runtime' | 'worker' | 'indexer';
 }
 
 /** 所有事件类型 */
@@ -35,20 +41,28 @@ export type AgentEventType =
   // 工具执行
   | 'tool_start'
   | 'tool_result'
+  | 'tool_summary'
   // 计划模式
   | 'plan_generated'
+  | 'plan_approved'
   | 'plan_step_update'
   | 'mode_change'
+  | 'mode_suggestion'
   | 'phase_change'
   // 上下文管理
   | 'compact'
+  | 'compact_boundary'
+  | 'recovery'
   | 'citation'
   | 'rag_enrich'
+  | 'rag_diagnostics'
   // 权限
   | 'permission_request'
   | 'permission_result'
   // 索引
   | 'index_progress'
+  // 运行状态
+  | 'run_status'
   // 草稿和输出
   | 'draft_ready'
   | 'doc_ready'
@@ -126,6 +140,29 @@ export interface RagEnrichEventData {
   query: string;
   /** 是否成功注入了RAG上下文 */
   injected: boolean;
+  /** 注入的chunk数 */
+  chunkCount?: number;
+  /** 使用的token数 */
+  usedTokens?: number;
+  /** 触发原因 */
+  triggerReason?: 'keyword' | 'always_in_plan' | 'none';
+}
+
+/** rag_diagnostics 事件数据 - 当前检索链路组件诊断 */
+export interface RagDiagnosticsEventData {
+  diagnostics: {
+    queryRewriter: {
+      name: string;
+      fallback: boolean;
+    };
+    reranker: {
+      name: string;
+      fallback: boolean;
+    };
+    relevanceGrader: {
+      name: string;
+    };
+  };
 }
 
 /** permission_request事件数据 */
@@ -181,6 +218,47 @@ export interface RecoverableErrorEventData {
   retryable: boolean;
 }
 
+/** compact_boundary事件数据 */
+export interface CompactBoundaryEventData {
+  boundaryId: string;
+  strategy: 'micro' | 'summary' | 'reactive';
+  freedTokens: number;
+}
+
+/** recovery事件数据 - 压缩后恢复 */
+export interface RecoveryEventData {
+  /** 记忆是否注入 */
+  memoryInjected: boolean;
+  /** RAG 引用是否重水合 */
+  ragRehydrated: boolean;
+  /** 计划摘要是否注入 */
+  planInjected: boolean;
+  /** 恢复使用的总 token 数 */
+  totalRecoveryTokens: number;
+}
+
+/** tool_summary事件数据 */
+export interface ToolSummaryEventData {
+  toolName: string;
+  callId: string;
+  summary: string;
+  retention: 'full' | 'summary' | 'drop_after_turn';
+}
+
+/** run_status事件数据 */
+export interface RunStatusEventData {
+  runId: string;
+  status: 'running' | 'completed' | 'aborted' | 'failed';
+  terminalReason?: string;
+  tokenUsage?: { prompt: number; completion: number; total: number };
+}
+
+/** mode_suggestion事件数据 - 自动检测到复杂任务时建议切换模式 */
+export interface ModeSuggestionEventData {
+  suggestedMode: AgentMode;
+  reason: string;
+}
+
 // ============================================================
 // 事件数据联合类型
 // ============================================================
@@ -191,16 +269,23 @@ export interface AgentEventDataMap {
   thinking: ThinkingEventData;
   tool_start: ToolStartEventData;
   tool_result: ToolResultEventData;
+  tool_summary: ToolSummaryEventData;
   plan_generated: PlanGeneratedEventData;
+  plan_approved: PlanGeneratedEventData;
   plan_step_update: PlanStepUpdateEventData;
   mode_change: ModeChangeEventData;
+  mode_suggestion: ModeSuggestionEventData;
   phase_change: PhaseChangeEventData;
   compact: CompactEventData;
+  compact_boundary: CompactBoundaryEventData;
+  recovery: RecoveryEventData;
   citation: CitationEventData;
   rag_enrich: RagEnrichEventData;
+  rag_diagnostics: RagDiagnosticsEventData;
   permission_request: PermissionRequestEventData;
   permission_result: PermissionResultEventData;
   index_progress: IndexProgressEventData;
+  run_status: RunStatusEventData;
   draft_ready: DraftReadyEventData;
   doc_ready: DocReadyEventData;
   model_pull_progress: ModelPullProgressEventData;

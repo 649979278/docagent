@@ -1,52 +1,50 @@
 /**
- * Zustand全局状态管理
- * 管理会话、消息、上下文指标、模型状态等
+ * Zustand 全局状态管理 - 聚合导出
+ * 7.3 Store 拆分后，此文件保留为向后兼容层
+ * 新代码应直接从各子 store 导入
+ *
+ * 子 Store 列表：
+ * - session-store: 会话列表、当前会话ID
+ * - message-store: 消息列表、加载状态
+ * - workspace-store: 工作区树、活跃工作区
+ * - knowledge-store: 知识库条目、索引任务、搜索结果
+ * - run-store: 上下文指标、模式、Plan阶段、诊断、Ollama状态
+ * - ui-store: 右侧抽屉Tab、侧边栏/抽屉折叠状态
  */
 
+// 重新导出所有子 store 以保持向后兼容
+export { useSessionStore } from './session-store.js';
+export type { Session } from './session-store.js';
+
+export { useMessageStore } from './message-store.js';
+export type { ChatMessage, ToolCallInfo } from './message-store.js';
+
+export { useWorkspaceStore } from './workspace-store.js';
+export type { WorkspaceItem } from './workspace-store.js';
+
+export { useKnowledgeStore } from './knowledge-store.js';
+export type { KnowledgeEntry, IndexJobState, KnowledgeSearchResult } from './knowledge-store.js';
+
+export { useRunStore } from './run-store.js';
+export type { ContextMetrics, RunDiagnostics } from './run-store.js';
+
+export { useUiStore } from './ui-store.js';
+export type { RightPanelTab } from './ui-store.js';
+
+/**
+ * 向后兼容：组合 store
+ * 新代码不应使用此 store，应直接使用各子 store
+ * @deprecated 使用各子 store 替代
+ */
 import { create } from 'zustand';
+import { useSessionStore } from './session-store.js';
+import { useMessageStore } from './message-store.js';
+import { useRunStore } from './run-store.js';
+import type { ChatMessage, ToolCallInfo } from './message-store.js';
+import type { ContextMetrics } from './run-store.js';
+import type { Session } from './session-store.js';
 
-/** 消息类型 */
-export interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  timestamp: number;
-  /** 工具调用信息 */
-  toolCalls?: ToolCallInfo[];
-  /** token数量 */
-  tokenCount?: number;
-}
-
-/** 工具调用信息 */
-export interface ToolCallInfo {
-  name: string;
-  status: 'running' | 'done' | 'error';
-  summary?: string;
-}
-
-/** 会话类型 */
-export interface Session {
-  id: string;
-  title: string;
-  mode: 'chat' | 'plan' | 'execute';
-  updatedAt: number;
-}
-
-/** 上下文指标 */
-export interface ContextMetrics {
-  /** 上下文窗口总大小 */
-  contextLength: number;
-  /** 已使用token数 */
-  usedTokens: number;
-  /** 使用百分比 0-100 */
-  usedPercentage: number;
-  /** 上次压缩释放的token */
-  lastCompactFreed: number;
-  /** 压缩次数 */
-  compactCount: number;
-}
-
-/** 应用状态 */
+/** 向后兼容的应用状态类型 */
 export interface AppState {
   // 会话
   sessions: Session[];
@@ -65,7 +63,7 @@ export interface AppState {
   ollamaStatus: 'checking' | 'running' | 'not_installed' | 'start_failed';
   ollamaModel: string;
 
-  // 操作
+  // 操作 - 代理到子 store
   setCurrentSession: (id: string | null) => void;
   setSessions: (sessions: Session[]) => void;
   addSession: (session: Session) => void;
@@ -80,17 +78,9 @@ export interface AppState {
   clearMessages: () => void;
 }
 
-/** 默认上下文指标 */
-const defaultMetrics: ContextMetrics = {
-  contextLength: 32768,
-  usedTokens: 0,
-  usedPercentage: 0,
-  lastCompactFreed: 0,
-  compactCount: 0,
-};
-
 /**
- * 全局状态store
+ * 向后兼容的全局状态 store
+ * @deprecated 使用各子 store 替代
  */
 export const useAppStore = create<AppState>((set) => ({
   sessions: [],
@@ -99,26 +89,66 @@ export const useAppStore = create<AppState>((set) => ({
   isLoading: false,
   mode: 'chat',
   planPhase: 'PLAN_COLLECT',
-  contextMetrics: defaultMetrics,
+  contextMetrics: {
+    contextLength: 32768,
+    usedTokens: 0,
+    usedPercentage: 0,
+    lastCompactFreed: 0,
+    compactCount: 0,
+  },
   ollamaStatus: 'checking',
   ollamaModel: '',
 
-  setCurrentSession: (id) => set({ currentSessionId: id }),
-  setSessions: (sessions) => set({ sessions }),
-  addSession: (session) => set((s) => ({ sessions: [session, ...s.sessions] })),
-  addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
-  updateMessage: (id, updates) =>
+  setCurrentSession: (id) => {
+    useSessionStore.getState().setCurrentSession(id);
+    set({ currentSessionId: id });
+  },
+  setSessions: (sessions) => {
+    useSessionStore.getState().setSessions(sessions);
+    set({ sessions });
+  },
+  addSession: (session) => {
+    useSessionStore.getState().addSession(session);
+    set((s) => ({ sessions: [session, ...s.sessions] }));
+  },
+  addMessage: (message) => {
+    useMessageStore.getState().addMessage(message);
+    set((s) => ({ messages: [...s.messages, message] }));
+  },
+  updateMessage: (id, updates) => {
+    useMessageStore.getState().updateMessage(id, updates);
     set((s) => ({
       messages: s.messages.map((m) => (m.id === id ? { ...m, ...updates } : m)),
-    })),
-  setLoading: (loading) => set({ isLoading: loading }),
-  setMode: (mode) => set({ mode }),
-  setPlanPhase: (phase) => set({ planPhase: phase }),
-  setContextMetrics: (metrics) =>
+    }));
+  },
+  setLoading: (loading) => {
+    useMessageStore.getState().setLoading(loading);
+    set({ isLoading: loading });
+  },
+  setMode: (mode) => {
+    useRunStore.getState().setMode(mode);
+    set({ mode });
+  },
+  setPlanPhase: (phase) => {
+    useRunStore.getState().setPlanPhase(phase);
+    set({ planPhase: phase });
+  },
+  setContextMetrics: (metrics) => {
+    useRunStore.getState().setContextMetrics(metrics);
     set((s) => ({
       contextMetrics: { ...s.contextMetrics, ...metrics },
-    })),
-  setOllamaStatus: (status) => set({ ollamaStatus: status }),
-  setOllamaModel: (model) => set({ ollamaModel: model }),
-  clearMessages: () => set({ messages: [] }),
+    }));
+  },
+  setOllamaStatus: (status) => {
+    useRunStore.getState().setOllamaStatus(status);
+    set({ ollamaStatus: status });
+  },
+  setOllamaModel: (model) => {
+    useRunStore.getState().setOllamaModel(model);
+    set({ ollamaModel: model });
+  },
+  clearMessages: () => {
+    useMessageStore.getState().clearMessages();
+    set({ messages: [] });
+  },
 }));

@@ -14,7 +14,7 @@ export type { MessageRecord, CreateMessageParams } from './messages.js';
 export { createPlan, getPlan, getActivePlanBySession, updatePlan, approvePlan, listPlansBySession } from './plans.js';
 export type { PlanRecord, CreatePlanParams } from './plans.js';
 
-export { createDocument, getDocument, getDocumentByPath, updateDocument, listDocuments, deleteDocument } from './documents.js';
+export { createDocument, getDocument, getDocumentByPath, updateDocument, listDocuments, listDocumentsByWorkspace, deleteDocument } from './documents.js';
 export type { DocumentRecord, CreateDocumentParams } from './documents.js';
 
 export { createChunk, createChunksBatch, getChunksByDocument, getChunk, updateChunkVectorId, deleteChunksByDocument } from './chunks.js';
@@ -32,4 +32,14 @@ export type { PermissionRecord } from './permissions.js';
 export { getSetting, setSetting, listSettings, deleteSetting } from './settings.js';
 export type { SettingRecord } from './settings.js';
 
+export { createWorkspace, getWorkspace, listWorkspaces, updateWorkspace, deleteWorkspace, bindSessionToWorkspace, unbindSessionFromWorkspace, getWorkspaceSessionIds, getSessionWorkspaceIds } from './workspaces.js';
+export type { WorkspaceRecord, CreateWorkspaceParams } from './workspaces.js';
+
+export { createAgentRun, getAgentRun, updateAgentRun, listAgentRunsBySession, listActiveAgentRuns, endAgentRun } from './agent-runs.js';
+export type { AgentRunRecord, CreateAgentRunParams, UpdateAgentRunParams } from './agent-runs.js';
+
+export { createAgentEvent, createAgentEventsBatch, listAgentEventsByRun, getLatestAgentEvent, getLatestSequence } from './agent-events.js';
+export type { AgentEventRecord, CreateAgentEventParams } from './agent-events.js';
+
 export { migrations } from './migrations/001_initial.js';
+export { applyMigration003, MIGRATION_003_VERSION } from './migrations/003_workspaces_runs.js';

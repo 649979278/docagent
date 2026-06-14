@@ -1,27 +1,30 @@
 /**
- * AgentWorker - Agent运行时Worker线程入口
- * 在独立线程中运行AgentRuntime，避免阻塞主进程
- * 主进程通过MessagePort与AgentWorker通信
+ * Agent Worker 线程入口。
+ * Worker 只负责隔离执行与消息转发，运行时装配必须和主进程 direct 模式共用 runtime-factory。
  */
 
-import { parentPort, workerData } from 'node:worker_threads';
-import type { AgentEventEnvelope, AgentMode } from '@workagent/shared';
-import { AgentRuntime, SessionOrchestrator } from '@workagent/agent-core';
-import { ToolRegistry, ToolExecutor, PermissionBroker } from '@workagent/tools';
-import { OllamaNativeProvider, MockModelProvider } from '@workagent/model-provider';
-import type { ModelProvider } from '@workagent/model-provider';
-import { initDatabase, closeDatabase } from '@workagent/store';
-import type { Database } from '@workagent/store';
-import { IngestPipeline, DocxExtractor, PptxExtractor, PdfExtractor, TxtExtractor } from '@workagent/ingest';
-import { MemoryVectorStore, OllamaEmbedder, RAGEngine } from '@workagent/rag';
-import { detectOllama } from '@workagent/windows-tools';
+import { parentPort } from 'node:worker_threads';
+import type { AgentEventEnvelope, AgentMode, PlanOutline } from '@workagent/shared';
+import type { OpenAICompatConfig } from '@workagent/model-provider';
+import { closeDatabase, initDatabase, updateSession, approvePlan as approvePlanRecord, type Database } from '@workagent/store';
+import type { AgentRuntime } from '@workagent/agent-core';
+import { createDesktopRuntimeBundle, type DesktopRuntimeBundle } from '../runtime-factory.js';
+import { approvePlanWithOutline } from '../plan-persistence.js';
+
+/** Worker 初始化参数。 */
+interface AgentWorkerInitOptions {
+  /** 数据库路径。 */
+  dbPath?: string;
+  /** OpenAI 兼容模型配置。 */
+  openAICompatConfig?: OpenAICompatConfig | null;
+}
 
 /** Worker接收的消息类型 */
 type AgentWorkerMessage =
-  | { type: 'init' }
+  | { type: 'init'; options?: AgentWorkerInitOptions }
   | { type: 'chat'; message: string; sessionId: string; mode?: AgentMode }
   | { type: 'abort' }
-  | { type: 'plan-approve'; planId: string; approved: boolean }
+  | { type: 'plan-approve'; planId: string; approved: boolean; updatedOutlineJson?: string }
   | { type: 'plan-cancel' }
   | { type: 'dispose' };
 
@@ -34,50 +37,45 @@ type AgentWorkerResponse =
 
 /** AgentWorker运行时状态 */
 let db: Database | null = null;
-let provider: ModelProvider | null = null;
 let runtime: AgentRuntime | null = null;
+let bundle: DesktopRuntimeBundle | null = null;
 let currentIterator: AsyncGenerator<AgentEventEnvelope> | null = null;
+/** 当前对话的会话 ID，abort 事件需要携带 */
+let currentSessionId: string | null = null;
+/** 当前对话的运行 ID，abort 事件需要携带 */
+let currentRunId: string | null = null;
+/** 当前对话的运行模式。 */
+let currentMode: AgentMode | null = null;
 
 /**
- * 初始化Agent运行时
+ * 初始化 Agent 运行时。
+ * @param options - 初始化参数。
  */
-async function initialize(): Promise<void> {
+async function initialize(options?: AgentWorkerInitOptions): Promise<void> {
   try {
-    // 1. 初始化数据库
     db = await initDatabase({
-      log: (msg: string) => send({ type: 'event', event: { sessionId: '', turnId: '', sequence: 0, type: 'error', data: { code: 'LOG', message: msg, recoverable: true }, createdAt: Date.now() } }),
+      dbPath: options?.dbPath,
+      log: (msg: string) => send({
+        type: 'event',
+        event: {
+          sessionId: '',
+          turnId: '',
+          sequence: 0,
+          type: 'error',
+          data: { code: 'LOG', message: msg, recoverable: true },
+          createdAt: Date.now(),
+          source: 'worker',
+        },
+      }),
     });
 
-    // 2. 初始化模型提供者
-    const status = await detectOllama();
-    if (status.running) {
-      provider = new OllamaNativeProvider();
-    } else {
-      provider = new MockModelProvider();
-    }
-
-    // 3. 初始化工具和运行时
-    const registry = new ToolRegistry();
-    const ingestPipeline = new IngestPipeline();
-    ingestPipeline.register(new DocxExtractor());
-    ingestPipeline.register(new PptxExtractor());
-    ingestPipeline.register(new PdfExtractor());
-    ingestPipeline.register(new TxtExtractor());
-
-    const vectorStore = new MemoryVectorStore();
-    const embedder = new OllamaEmbedder(provider);
-    const ragEngine = new RAGEngine(vectorStore, embedder);
-
-    const permissionBroker = new PermissionBroker({
-      saveDecision() {},
-      loadDecisions() { return []; },
-      removeDecision() {},
+    bundle = await createDesktopRuntimeBundle({
+      db,
+      autoApprovePermissions: true,
+      getOpenAICompatConfig: () => options?.openAICompatConfig ?? null,
+      emitEvent: (event) => send({ type: 'event', event: { ...event, source: 'worker' } }),
     });
-    permissionBroker.setRequestCallback(async () => ({ allowed: true, reason: '自动授权' }));
-
-    const executor = new ToolExecutor(registry, permissionBroker);
-
-    runtime = new AgentRuntime(provider, registry, executor, db);
+    runtime = bundle.runtime;
 
     send({ type: 'ready' });
   } catch (error) {
@@ -86,7 +84,10 @@ async function initialize(): Promise<void> {
 }
 
 /**
- * 处理对话请求
+ * 处理对话请求。
+ * @param message - 用户消息。
+ * @param sessionId - 会话 ID。
+ * @param mode - 运行模式。
  */
 async function handleChat(message: string, sessionId: string, mode?: AgentMode): Promise<void> {
   if (!runtime) {
@@ -94,13 +95,24 @@ async function handleChat(message: string, sessionId: string, mode?: AgentMode):
     return;
   }
 
+  // 保存当前对话上下文，abort 事件需要携带
+  currentSessionId = sessionId;
+  currentRunId = null;
+  currentMode = mode ?? 'chat';
+
   try {
     const effectiveMode = mode ?? 'chat';
     const iterator = runtime.runTurn(sessionId, message, effectiveMode);
     currentIterator = iterator;
 
     for await (const event of iterator) {
-      send({ type: 'event', event });
+      if (event.type === 'run_status') {
+        const data = event.data as { runId?: string };
+        if (data.runId) {
+          currentRunId = data.runId;
+        }
+      }
+      send({ type: 'event', event: { ...event, source: 'worker' } });
     }
 
     currentIterator = null;
@@ -108,45 +120,100 @@ async function handleChat(message: string, sessionId: string, mode?: AgentMode):
   } catch (error) {
     currentIterator = null;
     send({ type: 'chat-result', success: false, error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    currentSessionId = null;
+    currentRunId = null;
+    currentMode = null;
   }
 }
 
 /**
- * 中断当前对话
+ * 中断当前对话。
+ * 终止迭代器前先发送 run_status:aborted 事件，确保 Renderer 收到中止状态。
  */
 function handleAbort(): void {
   if (currentIterator) {
+    // 发送 aborted 事件（主进程 direct 模式由 runtime 自己发，Worker 模式需手动补充）
+    send({
+      type: 'event',
+      event: {
+        sessionId: currentSessionId ?? '',
+        turnId: '',
+        sequence: Date.now(),
+        type: 'run_status',
+        data: {
+          runId: currentRunId ?? '',
+          status: 'aborted',
+          terminalReason: 'aborted_streaming',
+        },
+        createdAt: Date.now(),
+        source: 'worker' as const,
+      },
+    });
+
     currentIterator.return?.(undefined);
     currentIterator = null;
   }
 }
 
 /**
- * 批准计划
+ * 批准或拒绝计划。
+ * @param approved - 是否批准。
  */
-function handlePlanApprove(planId: string, approved: boolean): void {
-  if (!runtime) return;
+function handlePlanApprove(approved: boolean, updatedOutlineJson?: string): void {
+  if (!runtime || !db || !currentSessionId) return;
+  const updatedOutline = parseUpdatedOutline(updatedOutlineJson);
   if (approved) {
-    runtime.getPlanController().approvePlan();
+    approvePlanWithOutline(runtime, updatedOutline);
+    const activePlan = runtime.getPlanController().getActivePlan();
+    if (activePlan) {
+      approvePlanRecord(db, activePlan.id, updatedOutlineJson);
+      updateSession(db, currentSessionId, {
+        mode: 'execute',
+        activePlanId: activePlan.id,
+      });
+      db.save();
+    }
   } else {
     runtime.getPlanController().cancelPlan();
+    updateSession(db, currentSessionId, {
+      mode: 'chat',
+      activePlanId: null,
+    });
+    db.save();
   }
 }
 
 /**
- * 取消计划
+ * 解析更新后的提纲 JSON。
+ * @param updatedOutlineJson - 提纲 JSON 字符串。
+ * @returns 计划提纲对象。
  */
-function handlePlanCancel(): void {
-  if (!runtime) return;
-  runtime.getPlanController().cancelPlan();
+function parseUpdatedOutline(updatedOutlineJson?: string): PlanOutline | undefined {
+  if (!updatedOutlineJson) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(updatedOutlineJson) as PlanOutline;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
- * 清理资源
+ * 取消计划。
+ */
+function handlePlanCancel(): void {
+  runtime?.getPlanController().cancelPlan();
+}
+
+/**
+ * 清理资源。
  */
 function dispose(): void {
   handleAbort();
   runtime = null;
+  bundle = null;
   if (db) {
     closeDatabase(db);
     db = null;
@@ -154,17 +221,17 @@ function dispose(): void {
 }
 
 /**
- * 发送消息到主线程
+ * 发送消息到主线程。
+ * @param response - Worker 响应。
  */
 function send(response: AgentWorkerResponse): void {
   parentPort?.postMessage(response);
 }
 
-// 监听主线程消息
 parentPort?.on('message', async (msg: AgentWorkerMessage) => {
   switch (msg.type) {
     case 'init':
-      await initialize();
+      await initialize(msg.options);
       break;
     case 'chat':
       await handleChat(msg.message, msg.sessionId, msg.mode);
@@ -173,7 +240,7 @@ parentPort?.on('message', async (msg: AgentWorkerMessage) => {
       handleAbort();
       break;
     case 'plan-approve':
-      handlePlanApprove(msg.planId, msg.approved);
+      handlePlanApprove(msg.approved, msg.updatedOutlineJson);
       break;
     case 'plan-cancel':
       handlePlanCancel();

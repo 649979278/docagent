@@ -196,6 +196,7 @@ export class DocumentChunker {
         sourceFile: document.filePath,
         sourceType: document.fileType,
         chunkIndex,
+        locator: section.locator,
         title: section.title,
         contentHash: this.hashContent(content),
       },
@@ -221,6 +222,7 @@ export class DocumentChunker {
         sourceFile: document.filePath,
         sourceType: document.fileType,
         chunkIndex,
+        locator: `段落${chunkIndex + 1}`,
         contentHash: this.hashContent(content),
       },
     };

@@ -59,6 +59,39 @@ export const DEFAULT_CHAT_MODEL = 'qwen3.5:9b';
 /** 默认Embedding模型 */
 export const DEFAULT_EMBEDDING_MODEL = 'bge-m3';
 
+/** Ollama 必需模型清单（精确匹配模型名） */
+export const REQUIRED_OLLAMA_MODELS = {
+  chat: 'qwen3.5:9b',
+  embedding: 'bge-m3',
+  reranker: 'bge-reranker-v2-m3',
+} as const;
+
+/**
+ * 模型名 alias 白名单。
+ * key = 期望模型名，value = 可接受的替代 tag 列表。
+ * 不在白名单中的变体一律视为不匹配。
+ */
+export const MODEL_ALIASES: Record<string, string[]> = {
+  'qwen3.5:9b': ['qwen3.5:9b-q4_K_M'],
+  'bge-m3': [],
+  'bge-reranker-v2-m3': [],
+};
+
+/**
+ * 检查 Ollama 模型列表是否包含指定模型。
+ * 精确匹配优先，再查 alias 白名单。
+ * qwen3.5:7b 不会误判为 qwen3.5:9b。
+ *
+ * @param modelName - 期望的模型名。
+ * @param availableModels - Ollama 返回的可用模型名列表。
+ * @returns 是否可用。
+ */
+export function isModelAvailable(modelName: string, availableModels: string[]): boolean {
+  if (availableModels.includes(modelName)) return true;
+  const aliases = MODEL_ALIASES[modelName] ?? [];
+  return aliases.some(alias => availableModels.includes(alias));
+}
+
 /** 备选Embedding模型 */
 export const FALLBACK_EMBEDDING_MODEL = 'nomic-embed-text';
 

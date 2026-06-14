@@ -173,6 +173,7 @@ export interface ChunkMetadata {
   sourceFile: string;
   sourceType: string;   // docx/pptx/pdf/txt/md
   chunkIndex: number;
+  locator: string;      // 页码/幻灯片/段落定位
   title?: string;
   department?: string;
   contentHash: string;  // SHA-256
@@ -298,4 +299,93 @@ export interface ContextBudget {
   toolResults: number;
   maxCompletionTokens: number;
   total: number;
+}
+
+// ============================================================
+// 运行时扩展类型
+// ============================================================
+
+/** 工具结果保留策略 */
+export type ToolResultRetention = 'full' | 'summary' | 'drop_after_turn';
+
+/** 运行终止原因 */
+export type RunTerminalReason =
+  | 'completed'
+  | 'prompt_too_long'
+  | 'aborted_streaming'
+  | 'aborted_tools'
+  | 'max_turns'
+  | 'model_error';
+
+/** Compact 边界记录 */
+export interface CompactBoundary {
+  id: string;
+  strategy: 'micro' | 'summary' | 'reactive';
+  messageCountBefore: number;
+  messageCountAfter: number;
+  freedTokens: number;
+  timestamp: number;
+}
+
+/** Prompt 诊断数据 */
+export interface PromptDiagnostics {
+  triggeredSections: string[];
+  historyTokens: number;
+  ragTokens: number;
+  toolTokens: number;
+  completionTokens: number;
+  hadToolCall: boolean;
+  toolParseFailed: boolean;
+  compactOccurred: boolean;
+  compactFreedTokens: number;
+  terminalReason: RunTerminalReason | null;
+  planTransition: string | null;
+  ragHitCount: number;
+  ragInjectedTokens: number;
+}
+
+/** 知识库检索响应 */
+export interface KnowledgeSearchResponse {
+  query: string;
+  topK: number;
+  results: RetrievedChunk[];
+  error?: string;
+}
+
+/** Workspace 实体 */
+export interface Workspace {
+  id: string;
+  name: string;
+  rootPath: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Agent 运行记录 */
+export interface AgentRun {
+  id: string;
+  sessionId: string;
+  mode: AgentMode;
+  status: 'running' | 'completed' | 'aborted' | 'failed';
+  startedAt: number;
+  endedAt?: number;
+  lastSequence: number;
+  tokenUsage: { prompt: number; completion: number; total: number };
+  error?: string;
+  terminalReason?: RunTerminalReason;
+  diagnostics?: PromptDiagnostics;
+}
+
+/** Agent 事件记录 */
+export interface AgentEventRecord {
+  id: number;
+  runId: string;
+  sequence: number;
+  type: string;
+  data: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  toolName?: string;
+  isError?: boolean;
+  createdAt: number;
 }

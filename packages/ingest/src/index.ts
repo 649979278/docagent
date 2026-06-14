@@ -7,7 +7,7 @@
 export { DocumentExtractor, IngestPipeline } from './pipeline.js';
 
 // 文档解析器实现
-export { DocxExtractor } from './docx.js';
+export { DocxExtractor, computeHash } from './docx.js';
 export { PdfExtractor } from './pdf.js';
 export { PptxExtractor } from './pptx.js';
 export { TxtExtractor } from './txt.js';

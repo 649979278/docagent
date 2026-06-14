@@ -21,7 +21,7 @@ interface LanceRecord {
   sourceFile: string;
   /** 来源类型（docx/pptx/pdf/txt/md） */
   sourceType: string;
-  /** 定位信息（页码/幻灯片/段落索引） */
+  /** 定位信息（页码/幻灯片/段落） - 来自section.locator */
   locator: string;
   /** 向量数据 */
   vector: number[];
@@ -108,12 +108,13 @@ export class LanceDBVectorStore implements KnowledgeIndex {
     }
 
     // 转换为LanceDB记录格式
+    // 使用metadata.locator（来自section.locator）而非chunkIndex
     const records: LanceRecord[] = chunks.map((chunk) => ({
       chunkId: chunk.chunkId,
       content: chunk.content,
       sourceFile: chunk.metadata.sourceFile,
       sourceType: chunk.metadata.sourceType,
-      locator: String(chunk.metadata.chunkIndex),
+      locator: chunk.metadata.locator || String(chunk.metadata.chunkIndex),
       vector: chunk.vector,
     }));
 
@@ -139,8 +140,9 @@ export class LanceDBVectorStore implements KnowledgeIndex {
   /**
    * 向量相似度搜索
    * 使用LanceDB的vectorSearch进行近似最近邻搜索
+   * 支持metadataFilter转WHERE子句进行精确过滤
    * @param queryVector - 查询向量
-   * @param options - 搜索选项（topK、最低分数等）
+   * @param options - 搜索选项（topK、最低分数、metadataFilter等）
    * @returns 按相似度降序排列的检索结果
    */
   async search(queryVector: number[], options?: SearchOptions): Promise<RetrievedChunk[]> {
@@ -153,7 +155,15 @@ export class LanceDBVectorStore implements KnowledgeIndex {
     await this.maybeCreateIndex();
 
     // 执行向量搜索
-    const query = table.vectorSearch(queryVector).limit(topK);
+    let query = table.vectorSearch(queryVector).limit(topK);
+
+    // 应用metadataFilter转WHERE子句
+    if (options?.metadataFilter && Object.keys(options.metadataFilter).length > 0) {
+      const whereClause = this.buildWhereClause(options.metadataFilter);
+      if (whereClause) {
+        query = query.where(whereClause);
+      }
+    }
 
     // 应用最低分数过滤（LanceDB返回的是距离，需要转换）
     const rawResults = await query.toArray();
@@ -342,6 +352,61 @@ export class LanceDBVectorStore implements KnowledgeIndex {
     if (distance === undefined || distance === null) return 0;
     // L2距离转相似度：使用反比例变换
     return 1 / (1 + distance);
+  }
+
+  /**
+   * 将metadataFilter对象转换为LanceDB WHERE子句
+   * 支持 = 和 IN 操作符
+   * @param filter - 元数据过滤条件
+   * @returns SQL WHERE子句字符串，空条件时返回空字符串
+   */
+  private buildWhereClause(filter: Record<string, unknown>): string {
+    const conditions: string[] = [];
+
+    for (const [key, value] of Object.entries(filter)) {
+      if (value === undefined || value === null) continue;
+
+      // 映射LanceRecord字段名
+      const columnName = this.mapFilterKeyToColumn(key);
+
+      if (Array.isArray(value)) {
+        // IN 操作：多个值用 OR 连接
+        const inConditions = value
+          .filter((v) => v !== undefined && v !== null)
+          .map((v) => `${columnName} = '${this.escapeSql(String(v))}'`);
+        if (inConditions.length > 0) {
+          conditions.push(`(${inConditions.join(' OR ')})`);
+        }
+      } else if (typeof value === 'string') {
+        conditions.push(`${columnName} = '${this.escapeSql(value)}'`);
+      } else if (typeof value === 'number') {
+        conditions.push(`${columnName} = ${value}`);
+      } else if (typeof value === 'boolean') {
+        conditions.push(`${columnName} = ${value}`);
+      }
+    }
+
+    return conditions.join(' AND ');
+  }
+
+  /**
+   * 将metadataFilter的key映射到LanceRecord列名
+   * 支持的映射: sourceFile, sourceType, locator
+   * @param key - filter中的key
+   * @returns LanceDB中的列名
+   */
+  private mapFilterKeyToColumn(key: string): string {
+    const keyMap: Record<string, string> = {
+      sourceFile: 'sourceFile',
+      sourceType: 'sourceType',
+      locator: 'locator',
+      // 支持别名
+      source_file: 'sourceFile',
+      source_type: 'sourceType',
+      file_path: 'sourceFile',
+      file_type: 'sourceType',
+    };
+    return keyMap[key] ?? key;
   }
 
   /**

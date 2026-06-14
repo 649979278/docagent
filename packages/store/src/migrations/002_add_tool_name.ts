@@ -14,8 +14,9 @@ import type { Database } from '../database.js';
  * 安全处理列已存在的情况（新建数据库的001已包含此列）
  * @param db - 数据库实例
  * @param log - 日志函数
+ * @param _fts5Available - FTS5 是否可用（002 不使用，保留接口一致性）
  */
-export function applyMigration002(db: Database, log: (msg: string) => void): void {
+export function applyMigration002(db: Database, log: (msg: string) => void, _fts5Available?: boolean): void {
   // 检查tool_name列是否已存在
   const tableInfo = db.pragma('table_info(messages)');
   // sql.js的pragma返回行可能格式不同，用prepare查询更可靠

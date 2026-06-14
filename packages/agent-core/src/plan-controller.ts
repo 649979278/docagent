@@ -18,10 +18,10 @@ import type { AgentTool, ToolRegistry } from '@workagent/tools';
 // 计划控制器事件
 // ============================================================
 
-/** 计划控制器事件类型 */
+/** 计划控制器事件类型 - 事件名与 shared/events.ts 对齐 */
 export type PlanControllerEvent =
-  | { type: 'phase_changed'; from: PlanPhase; to: PlanPhase }
-  | { type: 'plan_created'; plan: Plan }
+  | { type: 'phase_change'; from: PlanPhase; to: PlanPhase }
+  | { type: 'plan_generated'; plan: Plan }
   | { type: 'plan_approved'; plan: Plan }
   | { type: 'plan_cancelled' }
   | { type: 'step_updated'; step: PlanStep }
@@ -49,8 +49,8 @@ export class PlanModeController {
   private phase: PlanPhase = 'PLAN_COLLECT';
   /** 当前激活的计划 */
   private activePlan: Plan | null = null;
-  /** 事件回调 */
-  private callback: PlanControllerCallback | null = null;
+  /** 事件回调集合（支持多个 listener） */
+  private callbacks = new Set<PlanControllerCallback>();
   /** 当前Agent模式 */
   private mode: AgentMode = 'chat';
 
@@ -60,11 +60,13 @@ export class PlanModeController {
   constructor() {}
 
   /**
-   * 设置事件回调
-   * @param callback - 事件回调函数
+   * 注册计划控制器事件监听器。
+   * @param callback - 事件回调函数。
+   * @returns 取消监听函数（用于防泄漏，应在 finally 中调用）。
    */
-  onEvent(callback: PlanControllerCallback): void {
-    this.callback = callback;
+  onEvent(callback: PlanControllerCallback): () => void {
+    this.callbacks.add(callback);
+    return () => this.callbacks.delete(callback);
   }
 
   /**
@@ -120,7 +122,7 @@ export class PlanModeController {
       createdAt: Date.now(),
     };
 
-    this.emitEvent({ type: 'plan_created', plan: this.activePlan });
+    this.emitEvent({ type: 'plan_generated', plan: this.activePlan });
   }
 
   /**
@@ -183,11 +185,14 @@ export class PlanModeController {
       this.mode = 'plan';
     }
 
-    this.emitEvent({ type: 'phase_changed', from, to: nextPhase });
+    this.emitEvent({ type: 'phase_change', from, to: nextPhase });
   }
 
   /**
-   * 批准计划
+   * 批准计划。
+   * 只将状态设为 approved，不切换 phase/mode。
+   * phase/mode 切换由 startExecution() 负责，在下次 runTurn 检测到 approved 时调用。
+   *
    * @param updatedOutline - 用户修改后的提纲（可选）
    */
   approvePlan(updatedOutline?: PlanOutline): void {
@@ -203,12 +208,7 @@ export class PlanModeController {
     this.activePlan.status = 'approved';
     this.activePlan.approvedAt = Date.now();
 
-    // 批准后切换到执行模式
-    this.mode = 'execute';
-    this.phase = 'EXECUTE_DRAFT';
-
     this.emitEvent({ type: 'plan_approved', plan: this.activePlan });
-    this.emitEvent({ type: 'phase_changed', from: 'PLAN_REVIEW', to: 'EXECUTE_DRAFT' });
   }
 
   /**
@@ -252,17 +252,21 @@ export class PlanModeController {
   }
 
   /**
-   * 开始执行计划
+   * 开始执行计划。
+   * 由 runtime 在检测到 activePlan.status === 'approved' 且 mode === 'execute' 时调用。
+   * 将状态从 approved 切换为 executing，并发出 phase_change 和 execution_started 事件。
    */
   startExecution(): void {
     if (!this.activePlan || this.activePlan.status !== 'approved') {
       return;
     }
 
+    const from = this.phase;
     this.activePlan.status = 'executing';
     this.mode = 'execute';
     this.phase = 'EXECUTE_DRAFT';
 
+    this.emitEvent({ type: 'phase_change', from, to: 'EXECUTE_DRAFT' });
     this.emitEvent({ type: 'execution_started' });
   }
 
@@ -286,10 +290,12 @@ export class PlanModeController {
   }
 
   /**
-   * 发射事件
+   * 发射事件到所有已注册的监听器。
    * @param event - 事件对象
    */
   private emitEvent(event: PlanControllerEvent): void {
-    this.callback?.(event);
+    for (const cb of this.callbacks) {
+      cb(event);
+    }
   }
 }

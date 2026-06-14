@@ -1,6 +1,10 @@
 /**
- * 工具执行器 - 串行执行工具调用，带超时和结果截断
- * 一期不做并发，所有工具按顺序执行
+ * 工具执行器 - 只读并发/写入串行编排
+ * 参考 Claude Code partitionToolCalls 模式：
+ * - 只读工具并发执行（max concurrency 10）
+ * - 写入工具串行执行
+ * - 结果按原始调用顺序合并
+ * 通过 enableConcurrent=false 可回退到全量串行
  */
 
 import type {
@@ -31,6 +35,48 @@ export interface ExecutorConfig {
   maxResultTokens?: number;
   /** 失败后是否尝试fallback解析，默认true */
   enableFallback?: boolean;
+  /** 是否启用并发执行，默认true。设为false回退到全量串行 */
+  enableConcurrent?: boolean;
+  /** 只读工具最大并发数，默认10 */
+  maxConcurrency?: number;
+}
+
+// ============================================================
+// 工具调用分区
+// ============================================================
+
+/** 工具调用分区结果 */
+export interface PartitionedCalls {
+  /** 只读工具调用列表 */
+  readOnlyCalls: ToolCall[];
+  /** 写入工具调用列表 */
+  writeCalls: ToolCall[];
+}
+
+/**
+ * 将工具调用分为只读批和写入批
+ * 参考 Claude Code partitionToolCalls
+ * @param calls - 工具调用列表
+ * @param registry - 工具注册中心
+ * @returns 分区结果
+ */
+export function partitionToolCalls(
+  calls: ToolCall[],
+  registry: ToolRegistry,
+): PartitionedCalls {
+  const readOnlyCalls: ToolCall[] = [];
+  const writeCalls: ToolCall[] = [];
+
+  for (const call of calls) {
+    const tool = registry.getTool(call.name);
+    if (tool && tool.isReadOnly()) {
+      readOnlyCalls.push(call);
+    } else {
+      writeCalls.push(call);
+    }
+  }
+
+  return { readOnlyCalls, writeCalls };
 }
 
 // ============================================================
@@ -38,8 +84,9 @@ export interface ExecutorConfig {
 // ============================================================
 
 /**
- * 工具执行器 - 负责串行执行工具调用
- * 支持：超时控制、结果截断、失败fallback、权限检查
+ * 工具执行器 - 只读并发/写入串行编排
+ * 支持：并发控制、超时控制、结果截断、失败fallback、权限检查
+ * 通过 enableConcurrent=false 可回退到全量串行
  */
 export class ToolExecutor {
   /** 工具注册中心 */
@@ -66,16 +113,54 @@ export class ToolExecutor {
       timeout: config.timeout ?? TOOL_EXECUTION_TIMEOUT,
       maxResultTokens: config.maxResultTokens ?? MAX_TOOL_RESULT_TOKENS,
       enableFallback: config.enableFallback ?? true,
+      enableConcurrent: config.enableConcurrent ?? true,
+      maxConcurrency: config.maxConcurrency ?? 10,
     };
   }
 
   /**
-   * 串行执行一组工具调用
+   * 执行一组工具调用 - 只读并发/写入串行编排
+   * 参考 Claude Code partitionToolCalls 模式
    * @param calls - 工具调用列表
    * @param context - 工具执行上下文
    * @returns 执行结果列表，与输入调用一一对应
    */
   async executeAll(
+    calls: ToolCall[],
+    context: ToolContext,
+  ): Promise<ToolExecutionResult[]> {
+    // 串行回退路径
+    if (!this.config.enableConcurrent) {
+      return this.executeAllSerial(calls, context);
+    }
+
+    // 分区：只读 vs 写入
+    const { readOnlyCalls, writeCalls } = partitionToolCalls(calls, this.registry);
+
+    // 如果全是写入或全是只读，走简化路径
+    if (readOnlyCalls.length === 0) {
+      return this.executeAllSerial(calls, context);
+    }
+    if (writeCalls.length === 0) {
+      const results = await this.executeConcurrent(readOnlyCalls, context);
+      return this.mergeResultsInOrder(calls, readOnlyCalls, [], results, []);
+    }
+
+    // 混合模式：只读并发 + 写入串行
+    const readOnlyResults = await this.executeConcurrent(readOnlyCalls, context);
+    const writeResults = await this.executeAllSerial(writeCalls, context);
+
+    // 按原始调用顺序合并结果
+    return this.mergeResultsInOrder(calls, readOnlyCalls, writeCalls, readOnlyResults, writeResults);
+  }
+
+  /**
+   * 串行执行一组工具调用（全量串行回退路径）
+   * @param calls - 工具调用列表
+   * @param context - 工具执行上下文
+   * @returns 执行结果列表，与输入调用一一对应
+   */
+  private async executeAllSerial(
     calls: ToolCall[],
     context: ToolContext,
   ): Promise<ToolExecutionResult[]> {
@@ -90,6 +175,75 @@ export class ToolExecutor {
     }
 
     return results;
+  }
+
+  /**
+   * 并发执行只读工具
+   * 使用 worker pool 模式控制并发度
+   * @param calls - 只读工具调用列表
+   * @param context - 工具执行上下文
+   * @returns 执行结果列表，与输入调用一一对应
+   */
+  private async executeConcurrent(
+    calls: ToolCall[],
+    context: ToolContext,
+  ): Promise<ToolExecutionResult[]> {
+    if (calls.length === 0) return [];
+
+    const results = new Map<string, ToolExecutionResult>();
+    let index = 0;
+
+    const runNext = async (): Promise<void> => {
+      while (index < calls.length) {
+        const i = index++;
+        const result = await this.executeOne(calls[i], context);
+        results.set(calls[i].id, result);
+      }
+    };
+
+    const workers = Math.min(this.config.maxConcurrency, calls.length);
+    await Promise.all(Array.from({ length: workers }, () => runNext()));
+
+    return calls.map(c => results.get(c.id)!);
+  }
+
+  /**
+   * 按原始调用顺序合并只读和写入的结果
+   * @param originalCalls - 原始调用顺序
+   * @param readOnlyCalls - 只读调用列表
+   * @param writeCalls - 写入调用列表
+   * @param readOnlyResults - 只读执行结果
+   * @param writeResults - 写入执行结果
+   * @returns 按原始顺序合并的结果列表
+   */
+  private mergeResultsInOrder(
+    originalCalls: ToolCall[],
+    readOnlyCalls: ToolCall[],
+    writeCalls: ToolCall[],
+    readOnlyResults: ToolExecutionResult[],
+    writeResults: ToolExecutionResult[],
+  ): ToolExecutionResult[] {
+    // 构建 id -> result 的查找表
+    const readOnlyMap = new Map<string, ToolExecutionResult>();
+    readOnlyCalls.forEach((call, i) => readOnlyMap.set(call.id, readOnlyResults[i]));
+
+    const writeMap = new Map<string, ToolExecutionResult>();
+    writeCalls.forEach((call, i) => writeMap.set(call.id, writeResults[i]));
+
+    // 按原始顺序合并
+    return originalCalls.map(call => {
+      const readOnlyResult = readOnlyMap.get(call.id);
+      if (readOnlyResult) return readOnlyResult;
+      const writeResult = writeMap.get(call.id);
+      if (writeResult) return writeResult;
+      // 不应到达这里，但做防御性处理
+      return {
+        call,
+        output: null,
+        isError: true,
+        summary: '结果合并时未找到对应调用',
+      };
+    });
   }
 
   /**

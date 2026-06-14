@@ -56,7 +56,7 @@ async function initialize(): Promise<void> {
     // 3. 初始化RAG引擎
     const vectorStore = new MemoryVectorStore();
     const embedder = new OllamaEmbedder(provider);
-    ragEngine = new RAGEngine(vectorStore, embedder);
+    ragEngine = new RAGEngine({ index: vectorStore, embedder });
 
     send({ type: 'ready' });
   } catch (error) {
@@ -100,7 +100,7 @@ async function handleIndexFile(filePath: string, documentId: string, sessionId: 
           createdAt: Date.now(),
         },
       });
-    });
+    }, documentId);
 
     send({
       type: 'index-result',
