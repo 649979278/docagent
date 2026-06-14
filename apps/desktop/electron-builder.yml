@@ -1,0 +1,49 @@
+appId: com.workagent.desktop
+productName: WorkAgent
+copyright: Copyright © 2026 WorkAgent
+
+directories:
+  output: release
+
+files:
+  - dist/**/*
+  - renderer/**/*
+  - package.json
+  # 包含workspace依赖的编译输出
+  - ../../packages/*/dist/**/*
+  - ../../packages/*/package.json
+
+extraMetadata:
+  main: ./dist/electron/main.js
+
+# 不打包devDependencies
+buildDependenciesFromSource: false
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - universal
+  artifactName: "${productName}-${version}-mac.${ext}"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: "${productName}-${version}-win-setup.${ext}"
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: WorkAgent
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  artifactName: "${productName}-${version}-linux.${ext}"

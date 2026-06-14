@@ -1,0 +1,22 @@
+{
+  "name": "@workagent/rag",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RAG引擎 - KnowledgeIndex抽象/LanceDB/检索",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.30.0",
+    "@workagent/model-provider": "workspace:*",
+    "@workagent/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "typescript": "^5.6.0"
+  }
+}

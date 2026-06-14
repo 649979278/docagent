@@ -1,0 +1,24 @@
+{
+  "name": "@workagent/agent-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent运行时 - RunLoop/Context/Plan/Session",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@workagent/model-provider": "workspace:*",
+    "@workagent/rag": "workspace:*",
+    "@workagent/shared": "workspace:*",
+    "@workagent/store": "workspace:*",
+    "@workagent/tools": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "typescript": "^5.6.0"
+  }
+}
