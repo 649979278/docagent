@@ -88,6 +88,10 @@ interface SessionResumeResult {
   terminalStatus: string | null;
   lastAssistantContent: string;
   activePlanSnapshot: Record<string, unknown> | null;
+  output: {
+    draftContent: string | null;
+    docPath: string | null;
+  } | null;
   totalEvents: number;
   transcriptPath: string;
 }
@@ -159,6 +163,12 @@ const api = {
   /** 移除知识库文档（只删除数据库记录和向量索引，不删除磁盘文件） */
   removeKnowledge: (filePathOrDocId: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('knowledge-remove', filePathOrDocId),
+  knowledgeRefresh: (workspaceId?: string | null): Promise<KnowledgeListItem[]> =>
+    ipcRenderer.invoke('knowledge-refresh', workspaceId),
+  knowledgeMove: (docIds: string[], workspaceId: string | null): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('knowledge-move', docIds, workspaceId),
+  knowledgeRemoveBatch: (filePathOrDocIds: string[]): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('knowledge-remove-batch', filePathOrDocIds),
 
   // 权限响应
   permissionResponse: (toolName: string, allowed: boolean, remember?: boolean): Promise<{ toolName: string; allowed: boolean; remember?: boolean }> =>

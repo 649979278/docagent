@@ -19,6 +19,10 @@ export function useKnowledgeManager(): {
   searchKnowledge: (query: string, topK?: number) => Promise<void>;
   /** 获取已导入文档列表 */
   loadDocuments: () => Promise<void>;
+  /** 迁移知识文档到目标工作区 */
+  moveKnowledge: (docIds: string[], workspaceId: string | null) => Promise<void>;
+  /** 批量移除知识文档 */
+  removeKnowledgeBatch: (docIds: string[]) => Promise<void>;
 } {
   /** 导入文件到知识库 */
   const addKnowledge = useCallback(async () => {
@@ -63,7 +67,7 @@ export function useKnowledgeManager(): {
     if (!api) return;
 
     const { activeWorkspaceId } = useWorkspaceStore.getState();
-    const docs = await api.listKnowledge(activeWorkspaceId);
+    const docs = await api.knowledgeRefresh(activeWorkspaceId);
     useKnowledgeStore.getState().setKnowledgeEntries(
       docs.map((doc) => ({
         id: doc.id,
@@ -78,9 +82,35 @@ export function useKnowledgeManager(): {
     );
   }, []);
 
+  /**
+   * 迁移知识文档到目标工作区。
+   * @param docIds - 文档ID列表
+   * @param workspaceId - 目标工作区ID
+   */
+  const moveKnowledge = useCallback(async (docIds: string[], workspaceId: string | null) => {
+    const api = window.workagent;
+    if (!api || docIds.length === 0) return;
+    await api.knowledgeMove(docIds, workspaceId);
+    await loadDocuments();
+  }, [loadDocuments]);
+
+  /**
+   * 批量移除知识文档。
+   * @param docIds - 文档ID列表
+   */
+  const removeKnowledgeBatch = useCallback(async (docIds: string[]) => {
+    const api = window.workagent;
+    if (!api || docIds.length === 0) return;
+    await api.knowledgeRemoveBatch(docIds);
+    useKnowledgeStore.getState().setSelectedEntryIds([]);
+    await loadDocuments();
+  }, [loadDocuments]);
+
   return {
     addKnowledge,
     searchKnowledge,
     loadDocuments,
+    moveKnowledge,
+    removeKnowledgeBatch,
   };
 }

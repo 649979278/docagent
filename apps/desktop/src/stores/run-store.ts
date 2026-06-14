@@ -55,6 +55,10 @@ export interface RunDiagnostics {
     terminalStatus: string | null;
     lastAssistantContent: string;
     activePlanSnapshot: Record<string, unknown> | null;
+    output?: {
+      draftContent: string | null;
+      docPath: string | null;
+    } | null;
     totalEvents: number;
     transcriptPath: string;
   } | null;
@@ -63,6 +67,14 @@ export interface RunDiagnostics {
     queryRewriter: { name: string; fallback: boolean };
     reranker: { name: string; fallback: boolean };
     relevanceGrader: { name: string };
+  } | null;
+  /** 当前活跃计划快照 */
+  activePlanSnapshot?: Record<string, unknown> | null;
+  /** 当前输出状态 */
+  output?: {
+    draftContent?: string | null;
+    docPath?: string | null;
+    toolName?: string | null;
   } | null;
 }
 

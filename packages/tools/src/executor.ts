@@ -19,7 +19,7 @@ import {
   ToolExecutionError,
   PermissionDeniedError,
 } from '@workagent/shared';
-import type { AgentTool, ToolExecutionResult } from './base.js';
+import type { AgentTool, ToolExecutionObserver, ToolExecutionResult } from './base.js';
 import { ToolRegistry } from './base.js';
 import type { PermissionBroker } from './permission.js';
 
@@ -39,6 +39,8 @@ export interface ExecutorConfig {
   enableConcurrent?: boolean;
   /** 只读工具最大并发数，默认10 */
   maxConcurrency?: number;
+  /** 工具结果观察器 */
+  observer?: ToolExecutionObserver;
 }
 
 // ============================================================
@@ -115,6 +117,7 @@ export class ToolExecutor {
       enableFallback: config.enableFallback ?? true,
       enableConcurrent: config.enableConcurrent ?? true,
       maxConcurrency: config.maxConcurrency ?? 10,
+      observer: config.observer ?? {},
     };
   }
 
@@ -169,6 +172,7 @@ export class ToolExecutor {
     for (const call of calls) {
       const result = await this.executeOne(call, context);
       results.push(result);
+      await this.notifyObserver(result, context);
 
       // 如果权限被拒绝，仍然记录结果但不中止后续工具
       // 让runtime层决定如何处理
@@ -198,6 +202,7 @@ export class ToolExecutor {
         const i = index++;
         const result = await this.executeOne(calls[i], context);
         results.set(calls[i].id, result);
+        await this.notifyObserver(result, context);
       }
     };
 
@@ -425,5 +430,17 @@ export class ToolExecutor {
     }
 
     return null;
+  }
+
+  /**
+   * 通知工具执行观察器。
+   * @param result - 工具执行结果。
+   * @param context - 工具执行上下文。
+   */
+  private async notifyObserver(
+    result: ToolExecutionResult,
+    context: ToolContext,
+  ): Promise<void> {
+    await this.config.observer.onResult?.(result, context);
   }
 }

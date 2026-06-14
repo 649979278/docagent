@@ -12,7 +12,7 @@
     "test:e2e": "node scripts/run-vitest.js run --config vitest.config.ts",
     "test:rag": "node scripts/run-vitest.js run tests/e2e/rag-quality.test.ts --config vitest.config.ts",
     "test:all": "pnpm test:unit && pnpm test:e2e",
-    "verify": "pnpm doctor:env && pnpm test:unit && pnpm test:e2e && pnpm --filter @workagent/desktop build",
+    "verify": "pnpm doctor:env && pnpm test:unit && pnpm test:e2e && pnpm -r build && pnpm --filter @workagent/desktop build",
     "clean": "pnpm -r clean"
   },
   "engines": {

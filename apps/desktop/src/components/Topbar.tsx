@@ -23,7 +23,7 @@ interface TopbarProps {
  */
 export function Topbar({ isLoading, onTogglePlanMode, onAbort }: TopbarProps): React.ReactElement {
   const { mode, ollamaStatus } = useRunStore();
-  const { workspaceTree, activeWorkspaceId, setActiveWorkspaceId, addWorkspace } = useWorkspaceStore();
+  const { workspaceTree, activeWorkspaceId, setActiveWorkspaceId, addWorkspace, updateWorkspaceItem, removeWorkspace } = useWorkspaceStore();
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
 
   const handleWorkspaceChange = async (workspaceId: string) => {
@@ -53,6 +53,29 @@ export function Topbar({ isLoading, onTogglePlanMode, onAbort }: TopbarProps): R
     await handleWorkspaceChange(workspace.id);
   };
 
+  const handleRenameWorkspace = async () => {
+    if (!activeWorkspaceId) return;
+    const current = workspaceTree.find((workspace) => workspace.id === activeWorkspaceId);
+    const nextName = window.prompt('输入新的工作区名称', current?.name ?? '');
+    if (!nextName || nextName === current?.name) {
+      return;
+    }
+    await window.workagent?.updateWorkspace(activeWorkspaceId, { name: nextName });
+    updateWorkspaceItem(activeWorkspaceId, { name: nextName });
+  };
+
+  const handleDeleteWorkspace = async () => {
+    if (!activeWorkspaceId) return;
+    await window.workagent?.deleteWorkspace(activeWorkspaceId);
+    removeWorkspace(activeWorkspaceId);
+  };
+
+  const handleUnbindWorkspace = async () => {
+    if (!activeWorkspaceId || !currentSessionId) return;
+    await window.workagent?.unbindSessionWorkspace(activeWorkspaceId, currentSessionId);
+    setActiveWorkspaceId(null);
+  };
+
   return (
     <header className="flex items-center justify-between px-4 py-2 border-b bg-[var(--wa-bg-primary)] select-none" style={{ borderColor: 'var(--wa-border)' }}>
       <div className="flex items-center gap-3">
@@ -75,6 +98,27 @@ export function Topbar({ isLoading, onTogglePlanMode, onAbort }: TopbarProps): R
           className="px-2 py-1 rounded text-xs bg-[var(--wa-bg-tertiary)] text-[var(--wa-text-secondary)] border border-[var(--wa-border)]/50 hover:bg-[var(--wa-border)]"
         >
           + 工作区
+        </button>
+        <button
+          onClick={() => { void handleRenameWorkspace(); }}
+          disabled={!activeWorkspaceId}
+          className="px-2 py-1 rounded text-xs bg-[var(--wa-bg-tertiary)] text-[var(--wa-text-secondary)] border border-[var(--wa-border)]/50 hover:bg-[var(--wa-border)] disabled:opacity-40"
+        >
+          改名
+        </button>
+        <button
+          onClick={() => { void handleUnbindWorkspace(); }}
+          disabled={!activeWorkspaceId || !currentSessionId}
+          className="px-2 py-1 rounded text-xs bg-[var(--wa-bg-tertiary)] text-[var(--wa-text-secondary)] border border-[var(--wa-border)]/50 hover:bg-[var(--wa-border)] disabled:opacity-40"
+        >
+          解绑
+        </button>
+        <button
+          onClick={() => { void handleDeleteWorkspace(); }}
+          disabled={!activeWorkspaceId}
+          className="px-2 py-1 rounded text-xs bg-[var(--wa-error)]/10 text-[var(--wa-error)] border border-[var(--wa-error)]/30 hover:bg-[var(--wa-error)]/20 disabled:opacity-40"
+        >
+          删除
         </button>
       </div>
       <div className="flex items-center gap-2">

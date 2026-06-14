@@ -149,27 +149,73 @@ function PlanApprovalBanner(): React.ReactElement | null {
   const { planPhase, diagnostics, mode } = useRunStore();
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
   const api = window.workagent as any;
+  const [editing, setEditing] = useState(false);
+  const outlineJson = diagnostics.activePlanSnapshot
+    ? JSON.stringify((diagnostics.activePlanSnapshot as Record<string, unknown>).outline ?? {}, null, 2)
+    : '';
+  const [draftJson, setDraftJson] = useState(outlineJson);
+  const [parseError, setParseError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraftJson(outlineJson);
+  }, [outlineJson]);
 
   if (planPhase !== 'PLAN_REVIEW' || !diagnostics?.activePlanId || mode !== 'plan') {
     return null;
   }
 
+  const handleApprove = () => {
+    if (!editing) {
+      void api?.approvePlan?.(diagnostics.activePlanId, true, currentSessionId ?? '');
+      return;
+    }
+    try {
+      JSON.parse(draftJson);
+      setParseError(null);
+      void api?.approvePlan?.(diagnostics.activePlanId, true, currentSessionId ?? '', draftJson);
+      setEditing(false);
+    } catch (error) {
+      setParseError(error instanceof Error ? error.message : '提纲 JSON 格式不正确');
+    }
+  };
+
   return (
-    <div className="flex items-center gap-2 px-4 py-2 mb-3 bg-amber-50 border border-amber-200 rounded-lg">
-      <span className="text-sm text-amber-800">📋 计划已生成，等待审批</span>
-      <div className="flex-1" />
-      <button
-        className="px-3 py-1 text-sm bg-emerald-500 text-white rounded hover:bg-emerald-600 transition-colors"
-        onClick={() => api?.approvePlan?.(diagnostics.activePlanId, true, currentSessionId ?? '')}
-      >
-        ✓ 批准计划
-      </button>
-      <button
-        className="px-3 py-1 text-sm bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
-        onClick={() => api?.approvePlan?.(diagnostics.activePlanId, false, currentSessionId ?? '')}
-      >
-        ✗ 拒绝计划
-      </button>
+    <div className="px-4 py-3 mb-3 bg-amber-50 border border-amber-200 rounded-lg space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-amber-800">📋 计划已生成，等待审批</span>
+        <div className="flex-1" />
+        <button
+          className="px-3 py-1 text-sm bg-[var(--wa-bg-tertiary)] text-[var(--wa-text-primary)] rounded border border-[var(--wa-border)]/50 hover:bg-[var(--wa-border)] transition-colors"
+          onClick={() => setEditing((value) => !value)}
+        >
+          {editing ? '收起编辑' : '编辑提纲'}
+        </button>
+        <button
+          className="px-3 py-1 text-sm bg-emerald-500 text-white rounded hover:bg-emerald-600 transition-colors"
+          onClick={handleApprove}
+        >
+          ✓ 批准计划
+        </button>
+        <button
+          className="px-3 py-1 text-sm bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
+          onClick={() => api?.approvePlan?.(diagnostics.activePlanId, false, currentSessionId ?? '')}
+        >
+          ✗ 拒绝计划
+        </button>
+      </div>
+      {editing && (
+        <div className="space-y-2">
+          <textarea
+            value={draftJson}
+            onChange={(event) => setDraftJson(event.target.value)}
+            rows={14}
+            className="w-full rounded border border-[var(--wa-border)]/50 bg-[var(--wa-bg-primary)] px-3 py-2 text-xs text-[var(--wa-text-primary)] font-mono focus:outline-none focus:border-[var(--wa-border)]"
+          />
+          {parseError && (
+            <div className="text-xs text-red-600">{parseError}</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

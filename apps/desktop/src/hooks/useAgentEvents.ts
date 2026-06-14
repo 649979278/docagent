@@ -126,9 +126,43 @@ export function useAgentEvents(): {
         }
 
         case 'plan_generated': {
-          const data = event.data as { plan: { id: string } };
-          useRunStore.getState().setDiagnostics({ activePlanId: data.plan.id });
+          const data = event.data as { plan: { id: string } & Record<string, unknown> };
+          useRunStore.getState().setDiagnostics({
+            activePlanId: data.plan.id,
+            activePlanSnapshot: data.plan,
+            recoverySnapshot: {
+              ...(useRunStore.getState().diagnostics.recoverySnapshot ?? {
+                runId: event.runId ?? '',
+                terminalStatus: null,
+                lastAssistantContent: '',
+                activePlanSnapshot: null,
+                totalEvents: 0,
+                transcriptPath: '',
+              }),
+              activePlanSnapshot: data.plan,
+            },
+          });
           useRunStore.getState().setMode('plan');
+          break;
+        }
+
+        case 'plan_approved': {
+          const data = event.data as { plan: { id: string } & Record<string, unknown> };
+          useRunStore.getState().setDiagnostics({
+            activePlanId: data.plan.id,
+            activePlanSnapshot: data.plan,
+            recoverySnapshot: {
+              ...(useRunStore.getState().diagnostics.recoverySnapshot ?? {
+                runId: event.runId ?? '',
+                terminalStatus: null,
+                lastAssistantContent: '',
+                activePlanSnapshot: null,
+                totalEvents: 0,
+                transcriptPath: '',
+              }),
+              activePlanSnapshot: data.plan,
+            },
+          });
           break;
         }
 
@@ -170,6 +204,30 @@ export function useAgentEvents(): {
           };
           useRunStore.getState().setDiagnostics({
             ragDiagnostics: data.diagnostics,
+          });
+          break;
+        }
+
+        case 'draft_ready': {
+          const data = event.data as { content: string; format: 'markdown' };
+          useRunStore.getState().setDiagnostics({
+            output: {
+              ...(useRunStore.getState().diagnostics.output ?? {}),
+              draftContent: data.content,
+              toolName: 'draft_outline',
+            },
+          });
+          break;
+        }
+
+        case 'doc_ready': {
+          const data = event.data as { filePath: string };
+          useRunStore.getState().setDiagnostics({
+            output: {
+              ...(useRunStore.getState().diagnostics.output ?? {}),
+              docPath: data.filePath,
+              toolName: 'doc_write',
+            },
           });
           break;
         }

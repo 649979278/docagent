@@ -24,13 +24,6 @@ export function useSessionManager(): {
   /** 删除会话 */
   deleteSession: (id: string) => Promise<void>;
 } {
-  /** 初始化加载会话列表 */
-  const initSessions = useCallback(() => {
-    window.workagent?.listSessions().then((sessions) => {
-      useSessionStore.getState().setSessions(sessions);
-    });
-  }, []);
-
   /** 选择会话 */
   const selectSession = useCallback(async (id: string) => {
     // 如果当前有正在进行的对话，先中断
@@ -74,12 +67,25 @@ export function useSessionManager(): {
           terminalStatus: resume.terminalStatus,
           lastAssistantContent: resume.lastAssistantContent,
           activePlanSnapshot: resume.activePlanSnapshot,
+          output: resume.output ?? null,
           totalEvents: resume.totalEvents,
           transcriptPath: resume.transcriptPath,
         } : null,
+        activePlanSnapshot: resume?.activePlanSnapshot ?? null,
+        output: resume?.output ?? null,
       });
     }
   }, []);
+
+  /** 初始化加载会话列表 */
+  const initSessions = useCallback(() => {
+    window.workagent?.listSessions().then((sessions) => {
+      useSessionStore.getState().setSessions(sessions);
+      if (!useSessionStore.getState().currentSessionId && sessions.length > 0) {
+        void selectSession(sessions[0].id);
+      }
+    });
+  }, [selectSession]);
 
   /** 创建新会话 */
   const createSession = useCallback(async (title?: string): Promise<string | null> => {

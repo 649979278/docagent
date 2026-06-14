@@ -22,6 +22,11 @@ export interface Reranker {
    * @returns 重排后的检索结果。
    */
   rerank(chunks: RetrievedChunk[], query: string): Promise<RetrievedChunk[]>;
+  /**
+   * 获取当前诊断快照。
+   * @returns 组件名称及是否处于 fallback/禁用状态。
+   */
+  getDiagnostics?(): { name: string; fallback: boolean };
 }
 
 /**
@@ -37,6 +42,17 @@ export class PassThroughReranker implements Reranker {
    */
   async rerank(chunks: RetrievedChunk[], _query: string): Promise<RetrievedChunk[]> {
     return chunks;
+  }
+
+  /**
+   * 获取透传重排器诊断快照。
+   * @returns 透传重排器固定诊断信息。
+   */
+  getDiagnostics(): { name: string; fallback: boolean } {
+    return {
+      name: this.constructor.name,
+      fallback: true,
+    };
   }
 }
 
@@ -120,6 +136,17 @@ export class BGEReranker implements Reranker {
    */
   isDisabled(): boolean {
     return this.disabled;
+  }
+
+  /**
+   * 获取当前诊断快照。
+   * @returns 重排器实时诊断信息。
+   */
+  getDiagnostics(): { name: string; fallback: boolean } {
+    return {
+      name: this.constructor.name,
+      fallback: this.disabled,
+    };
   }
 
   /**

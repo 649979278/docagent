@@ -130,4 +130,44 @@ describe('plan approval flow', () => {
     expect(completed?.outlineJson).toContain('审批后的提纲标题');
     expect(getSession(db, 'session-plan-bridge')?.activePlanId).toBe(createdPlan!.id);
   });
+
+  it('approval persists edited outline json into plan record', async () => {
+    const db = await initDatabase({
+      dbPath: path.join(process.cwd(), `.tmp-plan-flow-edited-${Date.now()}.db`),
+    });
+    createSession(db, {
+      id: 'session-plan-edited',
+      title: 'edited plan',
+      mode: 'plan',
+    });
+
+    const bundle = await createDesktopRuntimeBundle({
+      db,
+      autoApprovePermissions: true,
+    });
+
+    const controller = bundle.runtime.getPlanController();
+    controller.enterPlanMode('session-plan-edited');
+    const activePlan = controller.getActivePlan();
+    expect(activePlan).not.toBeNull();
+
+    const editedOutline = {
+      ...activePlan!.outline,
+      title: '用户编辑后的提纲',
+      goal: '用户编辑后的目标',
+      structure: [
+        { id: 'edited-step-1', description: '编辑后的步骤一', status: 'pending' as const },
+        { id: 'edited-step-2', description: '编辑后的步骤二', status: 'pending' as const },
+      ],
+      risks: ['编辑后的风险'],
+      questions: ['编辑后的问题'],
+    };
+
+    controller.approvePlan(editedOutline);
+    const storedPlan = getPlan(db, activePlan!.id);
+
+    expect(storedPlan?.status).toBe('approved');
+    expect(storedPlan?.outlineJson).toBe(JSON.stringify(editedOutline));
+    expect(storedPlan?.outlineJson).toContain('编辑后的步骤一');
+  });
 });

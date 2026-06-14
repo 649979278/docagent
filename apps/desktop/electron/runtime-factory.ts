@@ -16,6 +16,8 @@ import {
 import { AgentRuntime, resumeSession, type RunLookupStore } from '@workagent/agent-core';
 import {
   bindPlanPersistenceBridge,
+  persistPlanOutput,
+  type PlanPersistenceBridgeOptions,
   type RetrievalDiagnosticsSnapshot,
 } from './plan-persistence.js';
 import {
@@ -31,6 +33,7 @@ import {
   ToolRegistry,
   type DocumentGenerator,
   type IndexManager,
+  type ToolExecutionObserver,
 } from '@workagent/tools';
 import { DocxExtractor, IngestPipeline, PdfExtractor, PptxExtractor, TxtExtractor } from '@workagent/ingest';
 import {
@@ -128,7 +131,33 @@ export async function createDesktopRuntimeBundle(
   });
   const permissionBroker = createPermissionBroker(options.db, options.autoApprovePermissions ?? false);
   const registry = new ToolRegistry();
-  const executor = new ToolExecutor(registry, permissionBroker);
+  let planBridgeOptions: PlanPersistenceBridgeOptions | null = null;
+  const outputObserver: ToolExecutionObserver = {
+    /**
+     * 监听文档与草稿类工具结果，桥接到计划持久化和事件流。
+     * @param result - 工具执行结果。
+     * @param context - 工具执行上下文。
+     */
+    async onResult(result, context): Promise<void> {
+      if (!planBridgeOptions || result.isError) {
+        return;
+      }
+
+      if (result.call.name === 'doc_write' || result.call.name === 'doc_overwrite') {
+        const output = result.output as { filePath?: string } | null;
+        if (output?.filePath) {
+          persistPlanOutput(planBridgeOptions, {
+            sessionId: context.sessionId,
+            type: 'doc_ready',
+            data: { filePath: output.filePath },
+          });
+        }
+      }
+    },
+  };
+  const executor = new ToolExecutor(registry, permissionBroker, {
+    observer: outputObserver,
+  });
 
   registerTools(registry, {
     db: options.db,
@@ -144,12 +173,13 @@ export async function createDesktopRuntimeBundle(
     sessionMemoryDir: path.join(appDataDir, 'session-memory'),
   });
 
-  bindPlanPersistenceBridge({
+  planBridgeOptions = {
     db: options.db,
     runtime,
     emitEvent: options.emitEvent,
     retrievalDiagnostics: components.diagnostics,
-  });
+  };
+  bindPlanPersistenceBridge(planBridgeOptions);
   bindPlanControllerEvents(runtime, options.emitEvent);
   await reconcileDeletedKnowledge(options.db, ragEngine);
 

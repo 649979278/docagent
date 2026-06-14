@@ -5,8 +5,10 @@ import {
   createWorkspace,
   deleteWorkspace,
   getSessionWorkspaceIds,
+  getWorkspaceSessionIds,
   listDocumentsByWorkspace,
   listWorkspaces,
+  updateDocumentsWorkspace,
   unbindSessionFromWorkspace,
   updateWorkspace,
 } from '@workagent/store';
@@ -67,5 +69,26 @@ export function registerWorkspaceIpc(ctx: IpcHandlerContext): void {
   ipcMain.handle('workspace-session-ids', async (_ev, sessionId: string) => {
     const db = await ctx.ensureDb();
     return getSessionWorkspaceIds(db, sessionId);
+  });
+
+  ipcMain.handle('workspace-documents', async (_ev, workspaceId: string) => {
+    const db = await ctx.ensureDb();
+    return listDocumentsByWorkspace(db, workspaceId, 1000, 0);
+  });
+
+  ipcMain.handle('workspace-document-move', async (_ev, docIds: string[], workspaceId: string | null) => {
+    const db = await ctx.ensureDb();
+    updateDocumentsWorkspace(db, docIds, workspaceId);
+    db.save();
+    return { success: true };
+  });
+
+  ipcMain.handle('workspace-unbind-all-sessions', async (_ev, workspaceId: string) => {
+    const db = await ctx.ensureDb();
+    for (const sessionId of getWorkspaceSessionIds(db, workspaceId)) {
+      unbindSessionFromWorkspace(db, sessionId, workspaceId);
+    }
+    db.save();
+    return { success: true };
   });
 }

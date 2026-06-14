@@ -14,7 +14,7 @@ export type { MessageRecord, CreateMessageParams } from './messages.js';
 export { createPlan, getPlan, getActivePlanBySession, updatePlan, approvePlan, listPlansBySession } from './plans.js';
 export type { PlanRecord, CreatePlanParams } from './plans.js';
 
-export { createDocument, getDocument, getDocumentByPath, updateDocument, listDocuments, listDocumentsByWorkspace, deleteDocument } from './documents.js';
+export { createDocument, getDocument, getDocumentByPath, updateDocument, updateDocumentWorkspace, updateDocumentsWorkspace, listDocuments, listDocumentsByWorkspace, deleteDocument, deleteDocuments } from './documents.js';
 export type { DocumentRecord, CreateDocumentParams } from './documents.js';
 
 export { createChunk, createChunksBatch, getChunksByDocument, getChunk, updateChunkVectorId, deleteChunksByDocument } from './chunks.js';

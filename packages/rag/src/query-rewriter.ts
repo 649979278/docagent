@@ -18,6 +18,11 @@ export interface QueryRewriter {
    * @returns 重写后的查询文本。
    */
   rewrite(query: string): Promise<string>;
+  /**
+   * 获取当前诊断快照。
+   * @returns 组件名称及是否处于 fallback/禁用状态。
+   */
+  getDiagnostics?(): { name: string; fallback: boolean };
 }
 
 /**
@@ -54,6 +59,17 @@ export class RuleBasedQueryRewriter implements QueryRewriter {
     const result = [...specialPatterns, ...filtered].join(' ');
 
     return result || query;
+  }
+
+  /**
+   * 获取规则重写器诊断快照。
+   * @returns 规则重写器的固定诊断信息。
+   */
+  getDiagnostics(): { name: string; fallback: boolean } {
+    return {
+      name: this.constructor.name,
+      fallback: true,
+    };
   }
 
   /**
@@ -180,6 +196,17 @@ export class OllamaQueryRewriter implements QueryRewriter {
    */
   isDisabled(): boolean {
     return this.disabled;
+  }
+
+  /**
+   * 获取当前诊断快照。
+   * @returns 查询重写器实时诊断信息。
+   */
+  getDiagnostics(): { name: string; fallback: boolean } {
+    return {
+      name: this.constructor.name,
+      fallback: this.disabled,
+    };
   }
 
   /**

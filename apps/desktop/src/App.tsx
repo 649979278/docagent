@@ -33,6 +33,10 @@ declare global {
         terminalStatus: string | null;
         lastAssistantContent: string;
         activePlanSnapshot: Record<string, unknown> | null;
+        output: {
+          draftContent: string | null;
+          docPath: string | null;
+        } | null;
         totalEvents: number;
         transcriptPath: string;
       } | null>;
@@ -49,6 +53,19 @@ declare global {
         indexedAt: number | null;
         sourceWorkspaceId: string | null;
       }>>;
+      knowledgeRefresh: (workspaceId?: string | null) => Promise<Array<{
+        id: string;
+        path: string;
+        fileName: string;
+        fileType: string;
+        status: string;
+        chunkCount: number;
+        indexedAt: number | null;
+        sourceWorkspaceId: string | null;
+      }>>;
+      knowledgeMove: (docIds: string[], workspaceId: string | null) => Promise<{ success: boolean }>;
+      knowledgeRemoveBatch: (filePathOrDocIds: string[]) => Promise<{ success: boolean }>;
+      removeKnowledge: (filePathOrDocId: string) => Promise<{ success: boolean; error?: string }>;
       searchKnowledge: (query: string, topK?: number) => Promise<unknown>;
       listWorkspaces: () => Promise<Array<{ id: string; name: string; rootPath: string; updatedAt: string; documentCount: number }>>;
       createWorkspace: (name: string, rootPath: string) => Promise<{ id: string; name: string; rootPath: string; updatedAt: string; documentCount: number }>;

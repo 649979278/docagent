@@ -212,6 +212,19 @@ export interface ToolExecutionResult {
 }
 
 /**
+ * 工具执行观察器。
+ * 用于在工具结果产生后桥接持久化、运行时事件和业务状态。
+ */
+export interface ToolExecutionObserver {
+  /**
+   * 单个工具调用完成后的通知。
+   * @param result - 工具执行结果。
+   * @param context - 工具执行上下文。
+   */
+  onResult?(result: ToolExecutionResult, context: ToolContext): void | Promise<void>;
+}
+
+/**
  * 将AgentTool转换为模型可识别的ToolDefinition格式
  * @param tool - Agent工具实例
  * @returns 模型用的工具定义

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { initDatabase, createDocument, createWorkspace, listDocumentsByWorkspace, getDocumentByPath, listDocuments } from '@workagent/store';
+import { initDatabase, createDocument, createWorkspace, listDocumentsByWorkspace, getDocumentByPath, listDocuments, getDocument, updateDocument } from '@workagent/store';
 import { IngestPipeline } from '@workagent/ingest';
 import { createDesktopRuntimeBundle } from '../../apps/desktop/electron/runtime-factory.js';
 
@@ -103,5 +103,42 @@ describe('knowledge lifecycle', () => {
     expect(workspaceDocs).toHaveLength(1);
     expect(workspaceDocs[0].sourceWorkspaceId).toBe('ws-knowledge');
     expect(workspaceDocs[0].fileName).toBe('a.txt');
+  });
+
+  it('moves knowledge document between workspaces by updating sourceWorkspaceId', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workagent-knowledge-move-'));
+    const db = await initDatabase({
+      dbPath: path.join(tempDir, 'workspace-move.db'),
+    });
+
+    createWorkspace(db, {
+      id: 'ws-from',
+      name: '来源工作区',
+      rootPath: path.join(tempDir, 'from'),
+    });
+    createWorkspace(db, {
+      id: 'ws-to',
+      name: '目标工作区',
+      rootPath: path.join(tempDir, 'to'),
+    });
+
+    createDocument(db, {
+      id: 'doc-move-1',
+      path: path.join(tempDir, 'move.txt'),
+      fileName: 'move.txt',
+      fileType: 'txt',
+      sha256: 'hash-move',
+      sourceWorkspaceId: 'ws-from',
+    });
+    db.save();
+
+    updateDocument(db, 'doc-move-1', {
+      sourceWorkspaceId: 'ws-to',
+    });
+    db.save();
+
+    expect(getDocument(db, 'doc-move-1')?.sourceWorkspaceId).toBe('ws-to');
+    expect(listDocumentsByWorkspace(db, 'ws-from')).toHaveLength(0);
+    expect(listDocumentsByWorkspace(db, 'ws-to')).toHaveLength(1);
   });
 });

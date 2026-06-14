@@ -17,6 +17,13 @@ const PLAN_PHASES = [
 export function PlanVisualizer(): React.ReactElement {
   const { planPhase, diagnostics } = useRunStore();
   const currentIndex = PLAN_PHASES.findIndex((item) => item.key === planPhase);
+  const activePlan = diagnostics.activePlanSnapshot as {
+    title?: string;
+    goal?: string;
+    outline?: {
+      structure?: Array<{ id: string; description: string; status: string }>;
+    };
+  } | null;
 
   return (
     <section className="rounded-lg border border-[var(--wa-border)]/50 bg-[var(--wa-bg-tertiary)]/40 p-3">
@@ -38,6 +45,26 @@ export function PlanVisualizer(): React.ReactElement {
           );
         })}
       </div>
+      {activePlan && (
+        <div className="mt-3 space-y-1">
+          <div className="text-[10px] uppercase tracking-wider text-[var(--wa-text-secondary)]">当前提纲</div>
+          <div className="text-xs text-[var(--wa-text-primary)]">{activePlan.title || '未命名计划'}</div>
+          {activePlan.goal && (
+            <div className="text-[10px] text-[var(--wa-text-secondary)]">{activePlan.goal}</div>
+          )}
+          {(activePlan.outline?.structure?.length ?? 0) > 0 && (
+            <div className="space-y-1">
+              {activePlan.outline!.structure!.slice(0, 4).map((step) => (
+                <div key={step.id} className="flex items-center gap-2 text-[10px] text-[var(--wa-text-secondary)]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--wa-accent)]" />
+                  <span className="truncate flex-1">{step.description}</span>
+                  <span>{step.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {diagnostics.modeSuggestion && (
         <div className="mt-3 rounded border border-[var(--wa-accent)]/30 bg-[var(--wa-accent)]/10 px-2.5 py-2 text-xs text-[var(--wa-accent)]">
           建议切换到 {diagnostics.modeSuggestion.suggestedMode} 模式：{diagnostics.modeSuggestion.reason}

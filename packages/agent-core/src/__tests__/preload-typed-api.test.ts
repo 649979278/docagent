@@ -74,6 +74,21 @@ interface ModelsStatusResult {
   health: boolean;
 }
 
+/** session-resume 返回类型 */
+interface SessionResumeResult {
+  runId: string;
+  lastSequence: number;
+  terminalStatus: string | null;
+  lastAssistantContent: string;
+  activePlanSnapshot: Record<string, unknown> | null;
+  output: {
+    draftContent: string | null;
+    docPath: string | null;
+  } | null;
+  totalEvents: number;
+  transcriptPath: string;
+}
+
 describe('Preload 类型契约', () => {
   it('chat 返回结构正确', () => {
     const result: ChatResult = {
@@ -178,5 +193,23 @@ describe('Preload 类型契约', () => {
   it('session-delete 返回结构正确', () => {
     const result = { success: true };
     expect(result.success).toBe(true);
+  });
+
+  it('session-resume 返回结构正确', () => {
+    const result: SessionResumeResult = {
+      runId: 'run_123',
+      lastSequence: 8,
+      terminalStatus: 'completed',
+      lastAssistantContent: '最近输出',
+      activePlanSnapshot: { id: 'plan_1' },
+      output: {
+        draftContent: '# 草稿',
+        docPath: '/tmp/out.docx',
+      },
+      totalEvents: 12,
+      transcriptPath: '/tmp/run_123.jsonl',
+    };
+    expect(result.output?.docPath).toContain('.docx');
+    expect(result.activePlanSnapshot?.id).toBe('plan_1');
   });
 });

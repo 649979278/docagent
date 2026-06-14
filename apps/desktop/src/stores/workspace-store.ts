@@ -30,6 +30,8 @@ export interface WorkspaceState {
   addWorkspace: (workspace: WorkspaceItem) => void;
   /** 删除工作区 */
   removeWorkspace: (id: string) => void;
+  /** 更新工作区 */
+  updateWorkspaceItem: (id: string, updates: Partial<WorkspaceItem>) => void;
 }
 
 /**
@@ -47,5 +49,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   removeWorkspace: (id) => set((s) => ({
     workspaceTree: s.workspaceTree.filter((w) => w.id !== id),
     activeWorkspaceId: s.activeWorkspaceId === id ? null : s.activeWorkspaceId,
+  })),
+  updateWorkspaceItem: (id, updates) => set((s) => ({
+    workspaceTree: s.workspaceTree.map((workspace) => (
+      workspace.id === id ? { ...workspace, ...updates } : workspace
+    )),
   })),
 }));

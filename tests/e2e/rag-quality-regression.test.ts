@@ -12,15 +12,21 @@
  * 9. resumeSession 从 transcript 恢复
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import type { RetrievedChunk } from '@workagent/shared';
 import {
   BM25Search,
+  type QueryRewriter,
   rrfFuse,
   RuleBasedQueryRewriter,
   OllamaQueryRewriter,
   PassThroughReranker,
   BGEReranker,
+  type Reranker,
+  type RetrievalComponents,
   ScoreAndKeywordGrader,
 } from '@workagent/rag';
 import { drainCollapse } from '@workagent/agent-core';
@@ -58,12 +64,68 @@ function createMessage(role: 'system' | 'user' | 'assistant' | 'tool', content: 
   };
 }
 
+/**
+ * 创建会在第 3 次调用后进入 fallback 的查询重写器。
+ * @returns 可观测诊断变化的测试重写器。
+ */
+function createFailingQueryRewriter(): {
+  rewrite(query: string): Promise<string>;
+  getDiagnostics(): { name: string; fallback: boolean };
+} {
+  let calls = 0;
+  let fallback = false;
+
+  return {
+    async rewrite(query: string): Promise<string> {
+      calls += 1;
+      if (calls >= 3) {
+        fallback = true;
+      }
+      return query;
+    },
+    getDiagnostics() {
+      return {
+        name: 'TestQueryRewriter',
+        fallback,
+      };
+    },
+  };
+}
+
+/**
+ * 创建会在第 3 次调用后进入 fallback 的重排器。
+ * @returns 可观测诊断变化的测试重排器。
+ */
+function createFailingReranker(): {
+  rerank(chunks: RetrievedChunk[], query: string): Promise<RetrievedChunk[]>;
+  getDiagnostics(): { name: string; fallback: boolean };
+} {
+  let calls = 0;
+  let fallback = false;
+
+  return {
+    async rerank(chunks: RetrievedChunk[], _query: string): Promise<RetrievedChunk[]> {
+      calls += 1;
+      if (calls >= 3) {
+        fallback = true;
+      }
+      return chunks;
+    },
+    getDiagnostics() {
+      return {
+        name: 'TestReranker',
+        fallback,
+      };
+    },
+  };
+}
+
 // ============================================================
 // RAG 质量回归测试
 // ============================================================
 
-describe('RAG 质量回归', () => {
-  it('desktop runtime exposes retrieval diagnostics snapshot for current default chain', async () => {
+  describe('RAG 质量回归', () => {
+    it('desktop runtime exposes retrieval diagnostics snapshot for current default chain', async () => {
     const db = await initDatabase({
       dbPath: `/tmp/workagent-rag-diag-${Date.now()}.db`,
     });
@@ -77,6 +139,74 @@ describe('RAG 质量回归', () => {
     expect(bundle.retrievalDiagnostics.reranker.name.length).toBeGreaterThan(0);
     expect(typeof bundle.retrievalDiagnostics.queryRewriter.fallback).toBe('boolean');
     expect(typeof bundle.retrievalDiagnostics.reranker.fallback).toBe('boolean');
+  });
+
+  it('search runtime emits updated rag_diagnostics after components enter fallback', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workagent-rag-diag-runtime-'));
+    const db = await initDatabase({
+      dbPath: path.join(tempDir, 'rag-diag-runtime.db'),
+    });
+    const events: Array<{ type: string; data: unknown }> = [];
+
+    const bundle = await createDesktopRuntimeBundle({
+      db,
+      autoApprovePermissions: true,
+      appDataDir: tempDir,
+      emitEvent: (event) => {
+        events.push({ type: event.type, data: event.data });
+      },
+      retrievalComponentsOverride: {
+        queryRewriter: createFailingQueryRewriter() as QueryRewriter,
+        reranker: createFailingReranker() as Reranker,
+      } satisfies Partial<RetrievalComponents>,
+    });
+
+    const controller = bundle.runtime.getPlanController();
+    controller.enterPlanMode('session-rag-diag-runtime');
+    expect(events.filter((event) => event.type === 'rag_diagnostics')).toHaveLength(1);
+
+    const toolContext = {
+      sessionId: 'session-rag-diag-runtime',
+      mode: 'plan' as const,
+      permissions: {},
+    };
+
+    await bundle.executor.executeAll([
+      {
+        id: 'call-rag-1',
+        name: 'rag_search',
+        arguments: { query: '第一次检索' },
+      },
+    ] as any, toolContext);
+
+    await bundle.executor.executeAll([
+      {
+        id: 'call-rag-2',
+        name: 'rag_search',
+        arguments: { query: '第二次检索' },
+      },
+    ] as any, toolContext);
+
+    await bundle.executor.executeAll([
+      {
+        id: 'call-rag-3',
+        name: 'rag_search',
+        arguments: { query: '第三次检索' },
+      },
+    ] as any, toolContext);
+
+    const ragDiagnosticsEvents = events.filter((event) => event.type === 'rag_diagnostics');
+    expect(ragDiagnosticsEvents).toHaveLength(2);
+
+    const latestDiagnostics = ragDiagnosticsEvents[ragDiagnosticsEvents.length - 1]?.data as {
+      diagnostics?: {
+        queryRewriter?: { fallback: boolean };
+        reranker?: { fallback: boolean };
+      };
+    };
+
+    expect(latestDiagnostics.diagnostics?.queryRewriter?.fallback).toBe(true);
+    expect(latestDiagnostics.diagnostics?.reranker?.fallback).toBe(true);
   });
 
   describe('Hybrid Fallback: dense miss → sparse hit', () => {
@@ -177,6 +307,7 @@ describe('RAG 质量回归', () => {
       await rewriter.rewrite('测试2');
       await rewriter.rewrite('测试3');
       expect(rewriter.isDisabled()).toBe(true);
+      expect(rewriter.getDiagnostics().fallback).toBe(true);
     });
   });
 
@@ -227,6 +358,7 @@ describe('RAG 质量回归', () => {
       await reranker.rerank(chunks, '测试3');
 
       expect(reranker.isDisabled()).toBe(true);
+      expect(reranker.getDiagnostics().fallback).toBe(true);
     });
 
     it('超过 20 条时超出部分直接追加', async () => {

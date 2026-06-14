@@ -1,4 +1,4 @@
-import type { AgentEventEnvelope, Plan, PlanOutline } from '@workagent/shared';
+import type { AgentEventEnvelope, DraftReadyEventData, DocReadyEventData, Plan, PlanOutline } from '@workagent/shared';
 import {
   createPlan,
   getPlan,
@@ -37,6 +37,18 @@ export interface PlanPersistenceBridgeOptions {
   emitEvent?: (event: AgentEventEnvelope) => void;
   /** 当前检索组件诊断快照。 */
   retrievalDiagnostics: RetrievalDiagnosticsSnapshot;
+}
+
+/**
+ * 输出事件发送参数。
+ */
+export interface PlanOutputEventParams {
+  /** 会话 ID。 */
+  sessionId: string;
+  /** 输出事件类型。 */
+  type: 'draft_ready' | 'doc_ready';
+  /** 事件数据。 */
+  data: DraftReadyEventData | DocReadyEventData;
 }
 
 /**
@@ -162,6 +174,40 @@ export function markActivePlanCompleted(runtime: AgentRuntime, finalDocPath?: st
 }
 
 /**
+ * 将输出结果回写到当前活跃计划，并向前端发出统一输出事件。
+ * @param options - 持久化桥配置。
+ * @param params - 输出事件参数。
+ */
+export function persistPlanOutput(
+  options: PlanPersistenceBridgeOptions,
+  params: PlanOutputEventParams,
+): void {
+  const plan = options.runtime.getPlanController().getActivePlan();
+  if (!plan || plan.sessionId !== params.sessionId) {
+    emitPlanBridgeEvent(options.emitEvent, params.sessionId, params.type, params.data);
+    return;
+  }
+
+  if (params.type === 'doc_ready') {
+    const docData = params.data as DocReadyEventData;
+    plan.finalDocPath = docData.filePath;
+    updatePlan(options.db, plan.id, {
+      status: plan.status === 'completed' ? 'completed' : 'executing',
+      outlineJson: JSON.stringify(plan.outline),
+      finalDocPath: docData.filePath,
+    });
+    options.db.save();
+  }
+
+  emitPlanBridgeEvent(
+    options.emitEvent,
+    params.sessionId,
+    params.type,
+    params.data,
+  );
+}
+
+/**
  * 持久化新生成的计划。
  * @param db - 数据库实例。
  * @param plan - 当前计划。
@@ -211,8 +257,8 @@ function persistApprovedPlan(db: Database, plan: Plan): void {
  */
 function createPlanBridgeEvent(
   sessionId: string,
-  type: 'rag_diagnostics',
-  data: Record<string, unknown>,
+  type: 'rag_diagnostics' | 'draft_ready' | 'doc_ready',
+  data: Record<string, unknown> | DraftReadyEventData | DocReadyEventData,
 ): AgentEventEnvelope {
   return {
     sessionId,
@@ -223,4 +269,20 @@ function createPlanBridgeEvent(
     createdAt: Date.now(),
     source: 'runtime',
   } as AgentEventEnvelope;
+}
+
+/**
+ * 发送桥接层输出/诊断事件。
+ * @param emitEvent - 统一事件出口。
+ * @param sessionId - 会话 ID。
+ * @param type - 事件类型。
+ * @param data - 事件数据。
+ */
+function emitPlanBridgeEvent(
+  emitEvent: ((event: AgentEventEnvelope) => void) | undefined,
+  sessionId: string,
+  type: 'rag_diagnostics' | 'draft_ready' | 'doc_ready',
+  data: Record<string, unknown> | DraftReadyEventData | DocReadyEventData,
+): void {
+  emitEvent?.(createPlanBridgeEvent(sessionId, type, data));
 }

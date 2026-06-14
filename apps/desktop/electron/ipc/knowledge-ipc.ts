@@ -7,7 +7,7 @@
 
 import { ipcMain } from 'electron';
 import type { IpcHandlerContext } from './context.js';
-import { getDocumentByPath, updateDocument, createDocument, listDocuments, listDocumentsByWorkspace } from '@workagent/store';
+import { getDocumentByPath, updateDocument, updateDocumentsWorkspace, createDocument, listDocuments, listDocumentsByWorkspace, deleteDocuments } from '@workagent/store';
 
 /**
  * 注册知识库相关 IPC 处理器。
@@ -120,6 +120,12 @@ export function registerKnowledgeIpc(ctx: IpcHandlerContext): void {
     return docs;
   });
 
+  // 刷新知识库列表
+  ipcMain.handle('knowledge-refresh', async (_ev, workspaceId?: string | null) => {
+    const db = await ctx.ensureDb();
+    return workspaceId ? listDocumentsByWorkspace(db, workspaceId) : listDocuments(db);
+  });
+
   // 搜索知识库
   ipcMain.handle('knowledge-search', async (_ev, query: string, topK?: number) => {
     const bundle = await ctx.ensureRuntime();
@@ -158,6 +164,27 @@ export function registerKnowledgeIpc(ctx: IpcHandlerContext): void {
     // 3. 删除 documents 记录
     db.prepare('DELETE FROM documents WHERE id = ?').run(doc.id);
 
+    db.save();
+    return { success: true };
+  });
+
+  // 批量移除知识库文档
+  ipcMain.handle('knowledge-remove-batch', async (_ev, filePathOrDocIds: string[]) => {
+    const db = await ctx.ensureDb();
+    deleteDocuments(db, filePathOrDocIds.map((item) => {
+      const doc = db.prepare(
+        'SELECT id FROM documents WHERE id = ? OR path = ?',
+      ).get(item, item) as { id: string } | undefined;
+      return doc?.id ?? item;
+    }));
+    db.save();
+    return { success: true };
+  });
+
+  // 迁移知识库文档到目标工作区
+  ipcMain.handle('knowledge-move', async (_ev, docIds: string[], workspaceId: string | null) => {
+    const db = await ctx.ensureDb();
+    updateDocumentsWorkspace(db, docIds, workspaceId);
     db.save();
     return { success: true };
   });

@@ -116,6 +116,52 @@ export function updateDocument(
 }
 
 /**
+ * 更新文档所属工作区。
+ * @param db - 数据库实例
+ * @param docId - 文档ID
+ * @param workspaceId - 新工作区ID，传 null 表示解绑
+ */
+export function updateDocumentWorkspace(
+  db: Database,
+  docId: string,
+  workspaceId: string | null,
+): void {
+  updateDocument(db, docId, {
+    sourceWorkspaceId: workspaceId,
+  });
+}
+
+/**
+ * 批量更新文档所属工作区。
+ * @param db - 数据库实例
+ * @param docIds - 文档ID列表
+ * @param workspaceId - 目标工作区ID，传 null 表示解绑
+ */
+export function updateDocumentsWorkspace(
+  db: Database,
+  docIds: string[],
+  workspaceId: string | null,
+): void {
+  for (const docId of docIds) {
+    updateDocumentWorkspace(db, docId, workspaceId);
+  }
+}
+
+/**
+ * 批量删除文档记录。
+ * @param db - 数据库实例
+ * @param docIds - 文档ID列表
+ */
+export function deleteDocuments(
+  db: Database,
+  docIds: string[],
+): void {
+  for (const docId of docIds) {
+    deleteDocument(db, docId);
+  }
+}
+
+/**
  * 列出所有文档
  * @param db - 数据库实例
  * @param limit - 返回数量限制

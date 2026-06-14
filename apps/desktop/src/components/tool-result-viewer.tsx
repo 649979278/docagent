@@ -1,5 +1,6 @@
 import React from 'react';
 import { useMessageStore } from '../stores/message-store.js';
+import { useRunStore } from '../stores/run-store.js';
 
 /**
  * 工具结果视图。
@@ -7,15 +8,31 @@ import { useMessageStore } from '../stores/message-store.js';
  */
 export function ToolResultViewer(): React.ReactElement | null {
   const { messages } = useMessageStore();
+  const { diagnostics } = useRunStore();
   const latestAssistant = [...messages].reverse().find((message) => message.role === 'assistant' && message.toolCalls?.length);
+  const output = diagnostics.output;
 
-  if (!latestAssistant?.toolCalls?.length) {
+  if (!latestAssistant?.toolCalls?.length && !output?.docPath && !output?.draftContent) {
     return null;
   }
 
   return (
     <section className="rounded-lg border border-[var(--wa-border)]/50 bg-[var(--wa-bg-tertiary)]/40 p-3">
       <div className="mb-2 text-[10px] uppercase tracking-wider text-[var(--wa-text-secondary)]">工具结果</div>
+      {(output?.docPath || output?.draftContent) && (
+        <div className="mb-2 rounded border border-[var(--wa-accent)]/20 bg-[var(--wa-accent)]/10 px-2.5 py-2 text-xs">
+          {output.docPath && (
+            <div className="text-[var(--wa-text-primary)] break-all">
+              输出文档：{output.docPath}
+            </div>
+          )}
+          {output.draftContent && (
+            <p className="mt-1 whitespace-pre-wrap text-[var(--wa-text-secondary)]">
+              {output.draftContent.slice(0, 160)}
+            </p>
+          )}
+        </div>
+      )}
       <div className="space-y-2">
         {latestAssistant.toolCalls.map((toolCall, index) => (
           <div key={`${toolCall.name}-${index}`} className="rounded border border-[var(--wa-border)]/40 bg-[var(--wa-bg-primary)] px-2.5 py-2 text-xs">

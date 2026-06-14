@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MockModelProvider } from '@workagent/model-provider';
 import { AgentRuntime } from '@workagent/agent-core';
-import { initDatabase, createSession, listAgentRunsBySession } from '@workagent/store';
+import { createAgentRun, createSession, endAgentRun, initDatabase, listAgentRunsBySession } from '@workagent/store';
 import { ToolExecutor, ToolRegistry, PermissionBroker } from '@workagent/tools';
 import { createDesktopRuntimeBundle } from '../../apps/desktop/electron/runtime-factory.js';
 
@@ -110,5 +110,49 @@ describe('recovery transcript', () => {
     expect(snapshot?.runId).toMatch(/^run_/);
     expect(snapshot?.totalEvents).toBeGreaterThan(0);
     expect(snapshot?.transcriptPath).toContain('transcripts');
+  });
+
+  it('resume snapshot includes latest output artifact path', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workagent-recovery-output-'));
+    const artifactsDir = path.join(tempDir, 'artifacts');
+    const db = await initDatabase({
+      dbPath: path.join(tempDir, 'recovery-output.db'),
+    });
+    createSession(db, {
+      id: 'session-recovery-output',
+      title: 'resume output',
+    });
+
+    const run = createAgentRun(db, {
+      id: 'run-recovery-output',
+      sessionId: 'session-recovery-output',
+      mode: 'chat',
+    });
+    endAgentRun(db, run.id, 'completed', 'completed', 0);
+
+    const bundle = await createDesktopRuntimeBundle({
+      db,
+      autoApprovePermissions: true,
+      appDataDir: artifactsDir,
+    });
+
+    const outputPath = path.join(tempDir, 'resume-output.docx');
+    const latestRun = listAgentRunsBySession(db, 'session-recovery-output')[0];
+    const transcriptPath = path.join(artifactsDir, 'transcripts', `${latestRun.id}.jsonl`);
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, '');
+    fs.appendFileSync(transcriptPath, `${JSON.stringify({
+      sessionId: 'session-recovery-output',
+      turnId: '',
+      sequence: Date.now(),
+      type: 'doc_ready',
+      data: { filePath: outputPath },
+      createdAt: Date.now(),
+      source: 'runtime',
+    })}\n`);
+
+    const snapshot = bundle.resumeSession('session-recovery-output');
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.output?.docPath).toBe(outputPath);
   });
 });

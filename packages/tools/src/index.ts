@@ -5,7 +5,7 @@
 
 // 基础定义
 export { ToolRegistry, toToolDefinition, getDefaultPermissionDecision } from './base.js';
-export type { AgentTool, ToolExecutionResult } from './base.js';
+export type { AgentTool, ToolExecutionResult, ToolExecutionObserver } from './base.js';
 
 // 权限代理
 export { PermissionBroker } from './permission.js';

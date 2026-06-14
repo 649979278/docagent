@@ -166,8 +166,8 @@ function PlanTab(): React.ReactElement {
  * 知识Tab - 知识库状态
  */
 function KnowledgeTab({ onAddKnowledge, onSearchKnowledge }: { onAddKnowledge: () => void; onSearchKnowledge: (query: string) => void }): React.ReactElement {
-  const { knowledgeEntries, searchResults, activeCitations } = useKnowledgeStore();
-  const { activeWorkspaceId } = useWorkspaceStore();
+  const { knowledgeEntries, searchResults, activeCitations, selectedEntryIds, setSelectedEntryIds } = useKnowledgeStore();
+  const { activeWorkspaceId, workspaceTree } = useWorkspaceStore();
   const [searchQuery, setSearchQuery] = React.useState('');
 
   const handleSearch = () => {
@@ -180,6 +180,40 @@ function KnowledgeTab({ onAddKnowledge, onSearchKnowledge }: { onAddKnowledge: (
     <div className="p-3 space-y-3">
       <SectionTitle>知识库</SectionTitle>
       <InfoRow label="当前工作区" value={activeWorkspaceId ?? '全部'} />
+      <div className="flex gap-1">
+        <button
+          onClick={() => setSelectedEntryIds(knowledgeEntries.map((entry) => entry.id))}
+          className="px-2 py-1 rounded text-[10px] bg-[var(--wa-bg-tertiary)] border border-[var(--wa-border)]/50"
+        >
+          全选
+        </button>
+        <button
+          onClick={() => setSelectedEntryIds([])}
+          className="px-2 py-1 rounded text-[10px] bg-[var(--wa-bg-tertiary)] border border-[var(--wa-border)]/50"
+        >
+          清空
+        </button>
+        <button
+          onClick={async () => {
+            const target = workspaceTree.find((workspace) => workspace.id !== activeWorkspaceId);
+            if (!target || selectedEntryIds.length === 0) return;
+            await window.workagent?.knowledgeMove(selectedEntryIds, target.id);
+          }}
+          className="px-2 py-1 rounded text-[10px] bg-[var(--wa-accent)]/10 border border-[var(--wa-accent)]/30"
+        >
+          迁移
+        </button>
+        <button
+          onClick={async () => {
+            if (selectedEntryIds.length === 0) return;
+            await window.workagent?.knowledgeRemoveBatch(selectedEntryIds);
+            setSelectedEntryIds([]);
+          }}
+          className="px-2 py-1 rounded text-[10px] bg-[var(--wa-error)]/10 border border-[var(--wa-error)]/30"
+        >
+          批删
+        </button>
+      </div>
 
       {/* 导入文件 */}
       <button
@@ -227,6 +261,15 @@ function KnowledgeTab({ onAddKnowledge, onSearchKnowledge }: { onAddKnowledge: (
           <div className="text-[10px] text-[var(--wa-text-secondary)]">已导入</div>
           {knowledgeEntries.map((entry) => (
             <div key={entry.id} className="flex items-center gap-2 px-2.5 py-1.5 rounded bg-[var(--wa-bg-tertiary)]/40 text-xs">
+              <input
+                type="checkbox"
+                checked={selectedEntryIds.includes(entry.id)}
+                onChange={(event) => {
+                  setSelectedEntryIds(event.target.checked
+                    ? [...selectedEntryIds, entry.id]
+                    : selectedEntryIds.filter((id) => id !== entry.id));
+                }}
+              />
               <span className="text-[var(--wa-text-secondary)]">{entry.type === 'docx' ? '📄' : entry.type === 'pptx' ? '📊' : entry.type === 'pdf' ? '📕' : '📝'}</span>
               <span className="text-[var(--wa-text-primary)] truncate flex-1">{entry.title}</span>
               <span className="text-[var(--wa-text-secondary)]">{entry.chunkCount}段</span>
@@ -358,13 +401,39 @@ function RunTab(): React.ReactElement {
  * 输出Tab - 草稿摘要/导出目标
  */
 function OutputTab(): React.ReactElement {
+  const { diagnostics } = useRunStore();
+  const output = diagnostics.output;
+
   return (
     <div className="p-3 space-y-3">
       <SectionTitle>输出</SectionTitle>
-      <p className="text-xs text-[var(--wa-text-secondary)]">暂无活跃输出</p>
-      <p className="text-[10px] text-[var(--wa-text-secondary)]">
-        在 Plan 模式下完成草稿后，输出将显示在此处
-      </p>
+      {!output?.docPath && !output?.draftContent ? (
+        <>
+          <p className="text-xs text-[var(--wa-text-secondary)]">暂无活跃输出</p>
+          <p className="text-[10px] text-[var(--wa-text-secondary)]">
+            在 Plan 模式下完成草稿后，输出将显示在此处
+          </p>
+        </>
+      ) : (
+        <>
+          {output.docPath && (
+            <>
+              <InfoRow label="文档路径" value={output.docPath} />
+              <div className="px-2 py-1 rounded bg-[var(--wa-bg-tertiary)]/40 text-[10px] text-[var(--wa-text-secondary)] border border-[var(--wa-border)]/30 break-all">
+                {output.docPath}
+              </div>
+            </>
+          )}
+          {output.draftContent && (
+            <>
+              <InfoRow label="草稿格式" value="markdown" />
+              <div className="px-2 py-1 rounded bg-[var(--wa-bg-tertiary)]/40 text-[10px] text-[var(--wa-text-secondary)] border border-[var(--wa-border)]/30 whitespace-pre-wrap">
+                {output.draftContent.slice(0, 300)}
+              </div>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }

@@ -45,6 +45,8 @@ export interface KnowledgeState {
   searchResults: KnowledgeSearchResult[];
   /** 活跃引用（当前对话中引用的知识片段） */
   activeCitations: KnowledgeSearchResult[];
+  /** 当前批量选中的文档ID */
+  selectedEntryIds: string[];
 
   /** 设置知识库条目 */
   setKnowledgeEntries: (entries: KnowledgeEntry[]) => void;
@@ -60,6 +62,8 @@ export interface KnowledgeState {
   setActiveCitations: (citations: KnowledgeSearchResult[]) => void;
   /** 清空搜索结果 */
   clearSearchResults: () => void;
+  /** 设置当前选中文档 */
+  setSelectedEntryIds: (ids: string[]) => void;
 }
 
 /**
@@ -70,6 +74,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set) => ({
   indexJobs: [],
   searchResults: [],
   activeCitations: [],
+  selectedEntryIds: [],
 
   setKnowledgeEntries: (entries) => set({ knowledgeEntries: entries }),
   addKnowledgeEntry: (entry) => set((s) => ({
@@ -90,4 +95,5 @@ export const useKnowledgeStore = create<KnowledgeState>((set) => ({
   setSearchResults: (results) => set({ searchResults: results }),
   setActiveCitations: (citations) => set({ activeCitations: citations }),
   clearSearchResults: () => set({ searchResults: [] }),
+  setSelectedEntryIds: (ids) => set({ selectedEntryIds: ids }),
 }));

@@ -54,6 +54,11 @@ export interface SessionResumeSnapshot {
   lastAssistantContent: string;
   /** 活跃计划快照（如有） */
   activePlanSnapshot: Record<string, unknown> | null;
+  /** 已恢复的输出状态 */
+  output: {
+    draftContent: string | null;
+    docPath: string | null;
+  } | null;
   /** 恢复的事件总数 */
   totalEvents: number;
   /** transcript 文件路径 */
@@ -96,6 +101,7 @@ export function resumeSession(
     let lastSequence = 0;
     let lastAssistantContent = '';
     let activePlanSnapshot: Record<string, unknown> | null = null;
+    let output: SessionResumeSnapshot['output'] = null;
 
     for (const line of lines) {
       try {
@@ -118,6 +124,22 @@ export function resumeSession(
             activePlanSnapshot = data.plan;
           }
         }
+
+        if (event.type === 'draft_ready') {
+          const data = event.data as { content?: string };
+          output = {
+            draftContent: data.content ?? null,
+            docPath: output?.docPath ?? null,
+          };
+        }
+
+        if (event.type === 'doc_ready') {
+          const data = event.data as { filePath?: string };
+          output = {
+            draftContent: output?.draftContent ?? null,
+            docPath: data.filePath ?? null,
+          };
+        }
       } catch {
         // 单行解析失败不影响其他行
       }
@@ -129,6 +151,7 @@ export function resumeSession(
       terminalStatus: latestRun.status,
       lastAssistantContent,
       activePlanSnapshot,
+      output,
       totalEvents: lines.length,
       transcriptPath: filePath,
     };

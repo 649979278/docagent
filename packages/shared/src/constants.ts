@@ -73,8 +73,8 @@ export const REQUIRED_OLLAMA_MODELS = {
  */
 export const MODEL_ALIASES: Record<string, string[]> = {
   'qwen3.5:9b': ['qwen3.5:9b-q4_K_M'],
-  'bge-m3': [],
-  'bge-reranker-v2-m3': [],
+  'bge-m3': ['bge-m3:latest'],
+  'bge-reranker-v2-m3': ['qllama/bge-reranker-v2-m3:latest'],
 };
 
 /**
