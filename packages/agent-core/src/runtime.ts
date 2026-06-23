@@ -28,6 +28,10 @@ import type {
   Memory,
   RetrievedChunk,
   RunTerminalReason,
+  AgentEventEnvelope,
+  AgentEventType,
+  AgentEventDataMap,
+  PlanOutline,
 } from '@workagent/shared';
 import {
   ContextLengthExceededError,
@@ -37,10 +41,9 @@ import {
   DEFAULT_CONTEXT_LENGTH,
   MAX_TOOL_RESULT_TOKENS,
 } from '@workagent/shared';
-import type { AgentEventEnvelope, AgentEventType, AgentEventDataMap } from '@workagent/shared';
 import type { ModelProvider, ChatMessage, ToolCallResult, ModelEvent } from '@workagent/model-provider';
-import type { Database, MessageRecord } from '@workagent/store';
-import { createMessage, createMessagesBatch, getRecentMessages, createAgentRun, createAgentEvent, endAgentRun } from '@workagent/store';
+import type { Database, MessageRecord, PlanRecord } from '@workagent/store';
+import { createMessage, createMessagesBatch, getRecentMessages, createAgentRun, createAgentEvent, endAgentRun, getSession, getPlan } from '@workagent/store';
 import type { ToolRegistry, ToolExecutor, AgentTool } from '@workagent/tools';
 import { toToolDefinition } from '@workagent/tools';
 import type { RAGSearchProvider } from '@workagent/tools';
@@ -209,6 +212,7 @@ export class AgentRuntime {
 
     // 初始化不可变查询循环状态
     const runId = `run_${Date.now()}`;
+    this.restorePlanFromStore(sessionId);
     let state = createQueryLoopState(sessionId, mode, budget, memories, input, runId);
     state = updateQueryLoopState(state, {
       activePlan: this.planController.getActivePlan(),
@@ -1123,4 +1127,66 @@ export class AgentRuntime {
     return created;
   }
 
+  /**
+   * 从数据库恢复当前会话的活跃计划到计划控制器。
+   * @param sessionId - 会话 ID。
+   */
+  private restorePlanFromStore(sessionId: string): void {
+    const session = getSession(this.db, sessionId);
+    if (!session?.activePlanId) {
+      return;
+    }
+    const current = this.planController.getActivePlan();
+    if (current?.id === session.activePlanId) {
+      return;
+    }
+    const record = getPlan(this.db, session.activePlanId);
+    if (!record) {
+      return;
+    }
+
+    this.planController.restorePlan(planRecordToPlan(record));
+  }
+
+}
+
+/**
+ * 将数据库计划记录转换为运行时计划快照。
+ * @param record - 计划记录。
+ * @returns 运行时计划。
+ */
+function planRecordToPlan(record: PlanRecord): Plan {
+  return {
+    id: record.id,
+    sessionId: record.sessionId,
+    status: record.status,
+    title: record.title,
+    goal: record.goal ?? '',
+    outline: parsePlanOutline(record),
+    approvedAt: record.approvedAt ?? undefined,
+    finalDocPath: record.finalDocPath ?? undefined,
+    createdAt: record.createdAt,
+  };
+}
+
+/**
+ * 解析计划记录中的提纲 JSON。
+ * @param record - 计划记录。
+ * @returns 计划提纲。
+ */
+function parsePlanOutline(record: PlanRecord): PlanOutline {
+  try {
+    return JSON.parse(record.outlineJson) as PlanOutline;
+  } catch {
+    return {
+      title: record.title,
+      goal: record.goal ?? '',
+      materialBasis: '',
+      structure: [],
+      expectedOutput: '',
+      risks: [],
+      questions: [],
+      citations: [],
+    };
+  }
 }

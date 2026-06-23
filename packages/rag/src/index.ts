@@ -28,7 +28,7 @@ export { RetrievalPipeline, normalizeQuery, packCitations, truncateByBudget, est
 export type { RetrievalInput, RetrievalOutput, CitatedChunk, StageTiming, RetrievalEventCallback } from './retrieval-pipeline.js';
 
 // 可插拔组件接口
-export type { RetrievalComponents, ChunkMetadataStore } from './components.js';
+export type { RetrievalComponents } from './components.js';
 
 // BM25 稀疏检索
 export { BM25Search } from './bm25-search.js';

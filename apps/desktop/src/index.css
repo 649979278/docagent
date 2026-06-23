@@ -2,6 +2,17 @@
 
 /* ===== WorkAgent 设计系统 CSS Variables ===== */
 :root {
+  --wa-font-scale: 1;
+  --wa-titlebar-height: 58px;
+  --wa-font-xs: calc(11px * var(--wa-font-scale));
+  --wa-font-sm: calc(12px * var(--wa-font-scale));
+  --wa-font-md: calc(13px * var(--wa-font-scale));
+  --wa-font-lg: calc(14px * var(--wa-font-scale));
+  --wa-control-height: calc(32px * var(--wa-font-scale));
+  --wa-icon-box: calc(18px * var(--wa-font-scale));
+  --wa-icon-size: calc(15px * var(--wa-font-scale));
+  --wa-line-tight: 1.25;
+  --wa-line-normal: 1.45;
   /* 背景 */
   --wa-bg-primary: #09090b;     /* zinc-950 */
   --wa-bg-secondary: #18181b;   /* zinc-900 */
@@ -41,6 +52,19 @@
   --wa-text-base: 14px;
 }
 
+html {
+  font-size: calc(16px * var(--wa-font-scale));
+}
+
+:root[data-theme="light"] {
+  --wa-bg-primary: #f6f6f4;
+  --wa-bg-secondary: #ffffff;
+  --wa-bg-tertiary: #e8e8e3;
+  --wa-text-primary: #151515;
+  --wa-text-secondary: #5f5f5f;
+  --wa-border: #d6d6cf;
+}
+
 /* ===== 自定义滚动条 - Codex风格 ===== */
 .scrollbar-thin::-webkit-scrollbar {
   width: 4px;
@@ -58,17 +82,22 @@
 
 /* ===== 全局滚动条 ===== */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #18181b;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #27272a;
-  border-radius: 3px;
+  background: rgba(116, 116, 116, 0.8);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3f3f46;
+  background: rgba(148, 148, 148, 0.95);
+  border: 1px solid transparent;
+  background-clip: padding-box;
 }
 
 /* ===== Markdown内容样式 ===== */
@@ -92,8 +121,23 @@
 /* ===== 全局字体 ===== */
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+  font-size: var(--wa-font-md);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
 }
 
 /* 防止Electron中文字选择时出现蓝色高亮 */
@@ -105,6 +149,101 @@ body {
 /* textarea 禁止拖拽调整大小 */
 textarea {
   resize: none;
+}
+
+.wa-label {
+  font-size: var(--wa-font-sm);
+  line-height: var(--wa-line-tight);
+}
+
+.wa-body {
+  font-size: var(--wa-font-md);
+  line-height: var(--wa-line-normal);
+}
+
+.wa-meta {
+  font-size: var(--wa-font-xs);
+  line-height: var(--wa-line-tight);
+}
+
+.wa-icon {
+  display: inline-flex;
+  width: var(--wa-icon-box);
+  height: var(--wa-icon-box);
+  flex: 0 0 var(--wa-icon-box);
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+  line-height: 1;
+}
+
+.wa-icon svg {
+  width: var(--wa-icon-size);
+  height: var(--wa-icon-size);
+  display: block;
+}
+
+.wa-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+
+.wa-control-button {
+  display: inline-flex;
+  height: var(--wa-control-height);
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 0 11px;
+  font-size: var(--wa-font-sm);
+  line-height: var(--wa-line-tight);
+  white-space: nowrap;
+}
+
+.wa-control-button--icon {
+  width: var(--wa-control-height);
+  padding: 0;
+}
+
+.wa-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #4a4a4a transparent;
+  scrollbar-gutter: stable;
+}
+
+.wa-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.wa-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.wa-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(92, 92, 92, 0.82);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+.wa-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 120, 120, 0.95);
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.wa-scrollbar-hidden {
+  scrollbar-width: none;
+}
+
+.wa-scrollbar-hidden::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 /* ===== 动画 ===== */

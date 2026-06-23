@@ -13,7 +13,11 @@
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import type { AgentEventEnvelope, AgentMode } from '@workagent/shared';
+import { createLogger } from '@workagent/shared';
 import type { OpenAICompatConfig } from '@workagent/model-provider';
+import type { PermissionApprovalPolicy } from './runtime-factory.js';
+
+const logger = createLogger('agent-worker-bridge');
 
 /** Worker 初始化参数 */
 export interface WorkerInitOptions {
@@ -21,6 +25,8 @@ export interface WorkerInitOptions {
   dbPath?: string;
   /** OpenAI 兼容模型配置。 */
   openAICompatConfig?: OpenAICompatConfig | null;
+  /** 工具权限审批策略。 */
+  permissionPolicy?: PermissionApprovalPolicy;
 }
 
 /** Worker 接收的消息类型 */
@@ -28,7 +34,7 @@ export type WorkerRequest =
   | { type: 'init'; options?: WorkerInitOptions }
   | { type: 'chat'; message: string; sessionId: string; mode?: AgentMode }
   | { type: 'abort' }
-  | { type: 'plan-approve'; planId: string; approved: boolean; updatedOutlineJson?: string }
+  | { type: 'plan-approve'; planId: string; sessionId: string; approved: boolean; updatedOutlineJson?: string }
   | { type: 'plan-cancel' }
   | { type: 'dispose' };
 
@@ -84,7 +90,7 @@ export class AgentWorkerBridge {
 
       // 监听 Worker 错误
       this.worker.on('error', (err) => {
-        console.error('[AgentWorkerBridge] Worker error:', err.message);
+        logger.error({ error: err.message }, 'Worker error');
         this.available = false;
         this.rejectAllPending(`Worker error: ${err.message}`);
       });
@@ -92,7 +98,7 @@ export class AgentWorkerBridge {
       // 监听 Worker 退出
       this.worker.on('exit', (code) => {
         if (code !== 0) {
-          console.warn(`[AgentWorkerBridge] Worker exited with code ${code}`);
+          logger.warn({ code }, 'Worker exited');
         }
         this.available = false;
         this.worker = null;
@@ -104,7 +110,7 @@ export class AgentWorkerBridge {
       this.initialized = initResult === true;
       return this.initialized;
     } catch (error) {
-      console.warn('[AgentWorkerBridge] Worker initialization failed:', error instanceof Error ? error.message : String(error));
+      logger.warn({ error: error instanceof Error ? error.message : String(error) }, 'Worker initialization failed');
       this.available = false;
       return false;
     }
@@ -191,10 +197,11 @@ export class AgentWorkerBridge {
    * 批准/拒绝计划
    * @param planId - 计划ID
    * @param approved - 是否批准
+   * @param sessionId - 会话 ID
    */
-  planApprove(planId: string, approved: boolean, updatedOutlineJson?: string): void {
+  planApprove(planId: string, approved: boolean, sessionId: string, updatedOutlineJson?: string): void {
     if (!this.available || !this.worker) return;
-    this.worker.postMessage({ type: 'plan-approve', planId, approved, updatedOutlineJson } as WorkerRequest);
+    this.worker.postMessage({ type: 'plan-approve', planId, sessionId, approved, updatedOutlineJson } as WorkerRequest);
   }
 
   /**
@@ -263,7 +270,7 @@ export class AgentWorkerBridge {
         break;
 
       case 'error':
-        console.error('[AgentWorkerBridge] Worker error:', msg.message);
+        logger.error({ error: msg.message }, 'Worker error');
         // 如果有正在进行的请求，拒绝它
         if (this.chatRequestId) {
           this.resolveChatRequest(false, msg.message);

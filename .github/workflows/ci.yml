@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  standard:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Unit tests
+        run: pnpm test:unit
+      - name: E2E tests without real models
+        run: pnpm test:e2e
+      - name: Build packages
+        run: pnpm -r build
+      - name: Build desktop
+        run: pnpm --filter @workagent/desktop build
+
+  real-rag-worker:
+    if: ${{ vars.ENABLE_REAL_E2E == '1' }}
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check real runtime environment
+        run: pnpm doctor:env
+      - name: Real Ollama + LanceDB + Worker E2E
+        run: pnpm test:e2e:real

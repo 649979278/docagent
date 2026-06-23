@@ -105,6 +105,8 @@ export interface RunState {
   setOllamaStatus: (status: RunState['ollamaStatus']) => void;
   /** 设置 Ollama 模型 */
   setOllamaModel: (model: string) => void;
+  /** 按会话切换重置 UI 运行态。 */
+  resetSessionRuntime: (mode?: 'chat' | 'plan' | 'execute') => void;
 }
 
 /** 默认上下文指标 */
@@ -157,4 +159,12 @@ export const useRunStore = create<RunState>((set) => ({
     })),
   setOllamaStatus: (status) => set({ ollamaStatus: status }),
   setOllamaModel: (model) => set({ ollamaModel: model }),
+  resetSessionRuntime: (mode = 'chat') => set((state) => ({
+    mode,
+    planPhase: 'PLAN_COLLECT',
+    contextMetrics: { ...defaultMetrics },
+    diagnostics: { ...defaultDiagnostics },
+    ollamaStatus: state.ollamaStatus,
+    ollamaModel: state.ollamaModel,
+  })),
 }));

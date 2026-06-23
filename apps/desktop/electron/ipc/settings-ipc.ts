@@ -3,7 +3,7 @@
  * 负责 settings-update、settings-get、models-status、open-file-dialog 四个 IPC 通道。
  */
 
-import { ipcMain, dialog } from 'electron';
+import { ipcMain, dialog, shell } from 'electron';
 import type { IpcHandlerContext } from './context.js';
 import { getSetting, setSetting, listSettings } from '@workagent/store';
 
@@ -31,7 +31,6 @@ export function registerSettingsIpc(
       setSetting(db, key, value);
       changedKeys.push(key);
     }
-    db.save();
 
     // 如果更新了 OpenAI 兼容配置，通知调用方重初始化
     if (onSettingsChange) {
@@ -70,5 +69,11 @@ export function registerSettingsIpc(
       filters: options?.filters,
     });
     return result.filePaths;
+  });
+
+  // 在资源管理器中打开目录
+  ipcMain.handle('reveal-in-explorer', async (_ev, targetPath: string) => {
+    const error = await shell.openPath(targetPath);
+    return error ? { success: false, error } : { success: true };
   });
 }

@@ -96,7 +96,6 @@ async function runTests() {
   const toolMsg = getRecentMessages(db, 'test-session-1', 1);
   assert(toolMsg[0]?.toolName === 'rag_search', `tool_name列写入/读取正确（${toolMsg[0]?.toolName}）`);
 
-  db.save();
 
   // ============================================================
   // 2. Ollama连接 + 对话

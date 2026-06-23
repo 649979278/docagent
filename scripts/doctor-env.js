@@ -10,7 +10,8 @@ const { REQUIRED_OLLAMA_MODELS, isModelAvailable } = require('../packages/shared
  * @returns {{ok: boolean, text: string}} 命令执行结果。
  */
 function run(command, args) {
-  const result = spawnSync(command, args, {
+  const isWindowsPnpm = process.platform === 'win32' && command === 'pnpm';
+  const result = spawnSync(isWindowsPnpm ? 'cmd.exe' : command, isWindowsPnpm ? ['/c', command, ...args] : args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -35,6 +36,24 @@ function run(command, args) {
  */
 function printLine(label, value) {
   console.log(`${label}: ${value}`);
+}
+
+/**
+ * 检查指定模块是否可被 Node 成功解析。
+ * @param {string} moduleName - 模块名。
+ * @param {string} [fromDir] - 解析起点目录。
+ * @returns {{ok: boolean, detail: string}} 检查结果。
+ */
+function checkModule(moduleName, fromDir = process.cwd()) {
+  try {
+    require.resolve(moduleName, { paths: [fromDir] });
+    return { ok: true, detail: 'ok' };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 /**
@@ -70,9 +89,27 @@ async function main() {
   const workspaceConfigExists = fs.existsSync(path.join(repoRoot, 'pnpm-workspace.yaml'));
   printLine('pnpm_workspace', workspaceConfigExists ? 'present' : 'missing');
 
+  const pnpmDirExists = fs.existsSync(path.join(repoRoot, 'node_modules', '.pnpm'));
+  printLine('workspace_dependencies', pnpmDirExists ? 'installed' : 'missing → pnpm install');
+  if (!pnpmDirExists) {
+    hasErrors = true;
+  }
+
   if (!pkgJsonExists || !desktopPkgExists || !workspaceConfigExists) {
     hasErrors = true;
   }
+
+  const betterSqlite = checkModule('better-sqlite3', path.join(repoRoot, 'packages', 'store'));
+  printLine('better_sqlite3', betterSqlite.ok ? 'ok' : `missing (${betterSqlite.detail})`);
+  if (!betterSqlite.ok) hasErrors = true;
+
+  const lanceDb = checkModule('@lancedb/lancedb', path.join(repoRoot, 'packages', 'rag'));
+  printLine('lancedb', lanceDb.ok ? 'ok' : `missing (${lanceDb.detail})`);
+  if (!lanceDb.ok) hasErrors = true;
+
+  const vitest = checkModule('vitest');
+  printLine('vitest', vitest.ok ? 'ok' : `missing (${vitest.detail})`);
+  if (!vitest.ok) hasErrors = true;
 
   // Ollama 模型存在性检查
   if (ollamaResult.ok) {

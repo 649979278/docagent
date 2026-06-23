@@ -34,6 +34,6 @@ describe('IPC domain registration', () => {
     expect(state.activeChatSessionId).toBeNull();
     expect(state.currentIterator).toBeNull();
     expect(state.terminalRunIds).toBeInstanceOf(Set);
-    expect(state.useWorkerMode).toBe(false);
+    expect(state.useWorkerMode).toBe(true);
   });
 });

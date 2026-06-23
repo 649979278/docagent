@@ -28,6 +28,8 @@ export interface SessionState {
   setCurrentSession: (id: string | null) => void;
   /** 删除会话（从列表中移除） */
   removeSession: (id: string) => void;
+  /** 更新会话标题 */
+  updateSessionTitle: (id: string, title: string) => void;
 }
 
 /**
@@ -43,5 +45,10 @@ export const useSessionStore = create<SessionState>((set) => ({
   removeSession: (id) => set((s) => ({
     sessions: s.sessions.filter((sess) => sess.id !== id),
     currentSessionId: s.currentSessionId === id ? null : s.currentSessionId,
+  })),
+  updateSessionTitle: (id, title) => set((s) => ({
+    sessions: s.sessions.map((session) => (
+      session.id === id ? { ...session, title, updatedAt: Date.now() } : session
+    )),
   })),
 }));

@@ -177,11 +177,11 @@ describe('injectRagContext 预算感知', () => {
   it('多个 chunk 超预算时截断', async () => {
     const budget = createTestBudget({ ragResults: 30 });
     const chunks = [
-      createTestChunk({ content: 'A'.repeat(20) }),
-      createTestChunk({ content: 'B'.repeat(20) }),
-      createTestChunk({ content: 'C'.repeat(20) }),
-      createTestChunk({ content: 'D'.repeat(20) }),
-      createTestChunk({ content: 'E'.repeat(20) }),
+      createTestChunk({ content: '政务服务标准化办理材料。'.repeat(20) }),
+      createTestChunk({ content: '电子证照共享核验材料。'.repeat(20) }),
+      createTestChunk({ content: '窗口一次性告知制度材料。'.repeat(20) }),
+      createTestChunk({ content: '监督抽查和整改闭环材料。'.repeat(20) }),
+      createTestChunk({ content: '基层事项清单治理材料。'.repeat(20) }),
     ];
     const provider = createMockSearchProvider(chunks);
 

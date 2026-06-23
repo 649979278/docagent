@@ -4,12 +4,11 @@
  */
 
 import { parentPort } from 'node:worker_threads';
-import type { AgentEventEnvelope, AgentMode, PlanOutline } from '@workagent/shared';
+import type { AgentEventEnvelope, AgentMode } from '@workagent/shared';
 import type { OpenAICompatConfig } from '@workagent/model-provider';
-import { closeDatabase, initDatabase, updateSession, approvePlan as approvePlanRecord, type Database } from '@workagent/store';
+import { closeDatabase, initDatabase, type Database } from '@workagent/store';
 import type { AgentRuntime } from '@workagent/agent-core';
-import { createDesktopRuntimeBundle, type DesktopRuntimeBundle } from '../runtime-factory.js';
-import { approvePlanWithOutline } from '../plan-persistence.js';
+import { createDesktopRuntimeBundle, type DesktopRuntimeBundle, type PermissionApprovalPolicy } from '../runtime-factory.js';
 
 /** Worker 初始化参数。 */
 interface AgentWorkerInitOptions {
@@ -17,6 +16,8 @@ interface AgentWorkerInitOptions {
   dbPath?: string;
   /** OpenAI 兼容模型配置。 */
   openAICompatConfig?: OpenAICompatConfig | null;
+  /** 工具权限审批策略。 */
+  permissionPolicy?: PermissionApprovalPolicy;
 }
 
 /** Worker接收的消息类型 */
@@ -24,7 +25,7 @@ type AgentWorkerMessage =
   | { type: 'init'; options?: AgentWorkerInitOptions }
   | { type: 'chat'; message: string; sessionId: string; mode?: AgentMode }
   | { type: 'abort' }
-  | { type: 'plan-approve'; planId: string; approved: boolean; updatedOutlineJson?: string }
+  | { type: 'plan-approve'; planId: string; sessionId: string; approved: boolean; updatedOutlineJson?: string }
   | { type: 'plan-cancel' }
   | { type: 'dispose' };
 
@@ -53,7 +54,7 @@ let currentMode: AgentMode | null = null;
  */
 async function initialize(options?: AgentWorkerInitOptions): Promise<void> {
   try {
-    db = await initDatabase({
+    db = initDatabase({
       dbPath: options?.dbPath,
       log: (msg: string) => send({
         type: 'event',
@@ -71,7 +72,7 @@ async function initialize(options?: AgentWorkerInitOptions): Promise<void> {
 
     bundle = await createDesktopRuntimeBundle({
       db,
-      autoApprovePermissions: true,
+      permissionPolicy: options?.permissionPolicy ?? 'ask_dangerous',
       getOpenAICompatConfig: () => options?.openAICompatConfig ?? null,
       emitEvent: (event) => send({ type: 'event', event: { ...event, source: 'worker' } }),
     });
@@ -158,46 +159,12 @@ function handleAbort(): void {
 
 /**
  * 批准或拒绝计划。
+ * @param sessionId - 会话 ID。
  * @param approved - 是否批准。
  */
-function handlePlanApprove(approved: boolean, updatedOutlineJson?: string): void {
-  if (!runtime || !db || !currentSessionId) return;
-  const updatedOutline = parseUpdatedOutline(updatedOutlineJson);
-  if (approved) {
-    approvePlanWithOutline(runtime, updatedOutline);
-    const activePlan = runtime.getPlanController().getActivePlan();
-    if (activePlan) {
-      approvePlanRecord(db, activePlan.id, updatedOutlineJson);
-      updateSession(db, currentSessionId, {
-        mode: 'execute',
-        activePlanId: activePlan.id,
-      });
-      db.save();
-    }
-  } else {
-    runtime.getPlanController().cancelPlan();
-    updateSession(db, currentSessionId, {
-      mode: 'chat',
-      activePlanId: null,
-    });
-    db.save();
-  }
-}
-
-/**
- * 解析更新后的提纲 JSON。
- * @param updatedOutlineJson - 提纲 JSON 字符串。
- * @returns 计划提纲对象。
- */
-function parseUpdatedOutline(updatedOutlineJson?: string): PlanOutline | undefined {
-  if (!updatedOutlineJson) {
-    return undefined;
-  }
-  try {
-    return JSON.parse(updatedOutlineJson) as PlanOutline;
-  } catch {
-    return undefined;
-  }
+function handlePlanApprove(planId: string, sessionId: string, approved: boolean, updatedOutlineJson?: string): void {
+  if (!bundle) return;
+  bundle.planService.approve({ planId, sessionId, approved, updatedOutlineJson });
 }
 
 /**
@@ -240,7 +207,7 @@ parentPort?.on('message', async (msg: AgentWorkerMessage) => {
       handleAbort();
       break;
     case 'plan-approve':
-      handlePlanApprove(msg.approved, msg.updatedOutlineJson);
+      handlePlanApprove(msg.planId, msg.sessionId, msg.approved, msg.updatedOutlineJson);
       break;
     case 'plan-cancel':
       handlePlanCancel();

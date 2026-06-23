@@ -94,6 +94,18 @@ export class PlanModeController {
   }
 
   /**
+   * 从持久化记录恢复计划状态，不触发任何计划事件。
+   * @param plan - 已持久化的计划快照。
+   * @param phase - 恢复后的计划阶段。
+   * @param mode - 恢复后的 Agent 模式。
+   */
+  restorePlan(plan: Plan, phase?: PlanPhase, mode?: AgentMode): void {
+    this.activePlan = plan;
+    this.phase = phase ?? inferPhaseFromPlan(plan);
+    this.mode = mode ?? inferModeFromPlan(plan);
+  }
+
+  /**
    * 进入计划模式
    * @param sessionId - 会话ID
    */
@@ -298,4 +310,31 @@ export class PlanModeController {
       cb(event);
     }
   }
+}
+
+/**
+ * 根据计划状态推导恢复阶段。
+ * @param plan - 计划快照。
+ * @returns 计划阶段。
+ */
+function inferPhaseFromPlan(plan: Plan): PlanPhase {
+  if (plan.status === 'approved') {
+    return 'PLAN_REVIEW';
+  }
+  if (plan.status === 'executing') {
+    return 'EXECUTE_DRAFT';
+  }
+  return 'PLAN_COLLECT';
+}
+
+/**
+ * 根据计划状态推导恢复后的运行模式。
+ * @param plan - 计划快照。
+ * @returns Agent 模式。
+ */
+function inferModeFromPlan(plan: Plan): AgentMode {
+  if (plan.status === 'approved' || plan.status === 'executing') {
+    return 'execute';
+  }
+  return plan.status === 'draft' ? 'plan' : 'chat';
 }

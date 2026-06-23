@@ -221,7 +221,8 @@ export class OllamaQueryRewriter implements QueryRewriter {
 1. 保留所有关键实体（如政策文号、法规编号、专有名词）
 2. 去除口语化表达和无关虚词
 3. 补充可能的相关同义词或缩写
-4. 输出格式：只用空格分隔的关键词，不要任何解释
+4. 优先输出 JSON 字符串数组，例如 ["改写查询1","关键词1 关键词2"]；如果无法输出 JSON，则只输出空格分隔关键词
+5. 不要输出解释、Markdown 或额外前后缀
 
 用户查询：${query}
 
@@ -246,6 +247,53 @@ export class OllamaQueryRewriter implements QueryRewriter {
       message?: { content?: string };
     };
 
-    return (data.message?.content ?? '').trim();
+    return normalizeRewriteResponse(data.message?.content ?? '');
   }
+}
+
+/**
+ * 规范化 LLM 查询改写响应。
+ * @param content - 模型原始输出。
+ * @returns 可直接用于检索的查询串。
+ */
+function normalizeRewriteResponse(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const jsonCandidate = extractJsonArray(trimmed);
+  if (jsonCandidate) {
+    try {
+      const parsed = JSON.parse(jsonCandidate) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          .map((item) => item.trim())
+          .join(' ');
+      }
+    } catch {
+      // 非合法 JSON 时继续按关键词串处理。
+    }
+  }
+
+  return trimmed
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 从模型输出中提取 JSON 数组片段。
+ * @param content - 模型输出。
+ * @returns JSON 数组文本。
+ */
+function extractJsonArray(content: string): string | null {
+  const start = content.indexOf('[');
+  const end = content.lastIndexOf(']');
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
+  }
+  return content.slice(start, end + 1);
 }

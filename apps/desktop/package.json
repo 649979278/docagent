@@ -8,7 +8,9 @@
     "build:electron": "tsc",
     "build:renderer": "vite build",
     "build": "tsc && vite build",
+    "test": "vitest run --config vitest.config.ts",
     "dev": "node scripts/dev.js",
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
     "clean": "rm -rf dist renderer",
     "pack": "tsc && vite build && electron-builder --dir",
     "dist": "tsc && vite build && electron-builder"
@@ -23,11 +25,13 @@
     "@workagent/store": "workspace:*",
     "@workagent/tools": "workspace:*",
     "@workagent/windows-tools": "workspace:*",
+    "better-sqlite3": "^12.10.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "@tailwindcss/vite": "^4.3.1",
     "@types/electron": "^1.6.12",
     "@types/node": "^22.0.0",
@@ -35,9 +39,9 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.6.0",
     "electron": "^42.4.0",
+    "electron-builder": "^26.0.12",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.6.0",
-    "vite": "^6.3.0",
-    "electron-builder": "^26.0.12"
+    "vite": "^6.3.0"
   }
 }

@@ -29,30 +29,3 @@ export interface RetrievalComponents {
   relevanceGrader?: RelevanceGrader;
 }
 
-/**
- * 块元数据存储接口。
- * 由调用方注入具体实现，避免 RAG 包硬绑定 @workagent/store。
- * 用于 BM25 检索的全文写入和删除。
- */
-export interface ChunkMetadataStore {
-  /**
-   * 批量写入块元数据（全文 + 来源文件路径）。
-   * @param chunks - 块元数据列表。
-   */
-  upsertChunkMetadata(chunks: Array<{
-    /** 块 ID */
-    chunkId: string;
-    /** 来源文件路径 */
-    sourceFile: string;
-    /** 块全文内容 */
-    content: string;
-    /** 文档 ID（可选，由调用方从外部上下文提供） */
-    documentId?: string;
-  }>): void;
-
-  /**
-   * 删除指定文档的所有块元数据。
-   * @param documentId - 文档 ID。
-   */
-  deleteChunkMetadata(documentId: string): void;
-}

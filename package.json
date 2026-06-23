@@ -5,22 +5,35 @@
   "description": "离线公文写作Agent - Windows桌面应用",
   "scripts": {
     "build": "pnpm -r build",
-    "lint": "pnpm -r lint",
+    "lint": "eslint \"apps/**/*.{ts,tsx,js,mjs,cjs}\" \"packages/**/*.{ts,tsx,js,mjs,cjs}\" \"tests/**/*.{ts,tsx,js,mjs,cjs}\"",
     "test": "pnpm -r test",
     "doctor:env": "node scripts/doctor-env.js",
-    "test:unit": "pnpm --filter @workagent/agent-core --filter @workagent/ingest --filter @workagent/rag --filter @workagent/store --filter @workagent/tools test",
+    "test:unit": "pnpm --filter @workagent/agent-core --filter @workagent/desktop --filter @workagent/ingest --filter @workagent/rag --filter @workagent/store --filter @workagent/tools test",
     "test:e2e": "node scripts/run-vitest.js run --config vitest.config.ts",
-    "test:rag": "node scripts/run-vitest.js run tests/e2e/rag-quality.test.ts --config vitest.config.ts",
+    "test:e2e:real": "cross-env E2E_REAL_OLLAMA=1 node scripts/run-vitest.js run tests/e2e/knowledge-service-closure.test.ts tests/e2e/runtime.worker-parity.test.ts tests/e2e/rag-quality-regression.test.ts --config vitest.config.ts",
+    "test:rag": "node scripts/run-vitest.js run tests/e2e/rag-quality-regression.test.ts --config vitest.config.ts",
     "test:all": "pnpm test:unit && pnpm test:e2e",
-    "verify": "pnpm doctor:env && pnpm test:unit && pnpm test:e2e && pnpm -r build && pnpm --filter @workagent/desktop build",
+    "desktop:prepare-native": "pnpm --filter @workagent/desktop rebuild:native && node scripts/check-electron-native.js",
+    "native:restore-node": "pnpm --dir node_modules/.pnpm/better-sqlite3@12.10.1/node_modules/better-sqlite3 run install",
+    "verify": "pnpm doctor:env && pnpm test:unit && pnpm test:e2e && pnpm test:e2e:real && pnpm -r build && pnpm --filter @workagent/desktop build && pnpm desktop:prepare-native && pnpm native:restore-node",
     "clean": "pnpm -r clean"
   },
   "engines": {
     "node": ">=24.0.0"
   },
   "packageManager": "pnpm@9.15.0",
+  "pnpm": {
+    "overrides": {
+      "@noble/hashes": "^1.8.0"
+    }
+  },
   "devDependencies": {
+    "@eslint/js": "^9.30.0",
     "@types/node": "^22.0.0",
+    "cross-env": "^7.0.3",
+    "eslint": "^9.30.0",
+    "prettier": "^3.6.2",
+    "typescript-eslint": "^8.35.0",
     "vite": "^6.4.3",
     "vitest": "^4.1.8"
   }

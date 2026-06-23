@@ -46,6 +46,18 @@ export function useAgentEvents(): {
     const api = window.workagent;
     if (!api) return;
 
+    /**
+     * 结束当前前端流式状态。
+     * run_status 的终态与 done/error 都代表一次运行应从 UI loading 状态退出。
+     */
+    const finishCurrentRun = (): void => {
+      useMessageStore.getState().setLoading(false);
+      assistantContentRef.current = '';
+      assistantThinkingRef.current = '';
+      assistantMsgIdRef.current = '';
+      isThinkingRef.current = false;
+    };
+
     const unsub = api.onAgentEvent((rawEvent: unknown) => {
       const event = rawEvent as AgentEventEnvelope;
 
@@ -169,6 +181,12 @@ export function useAgentEvents(): {
         case 'mode_change': {
           const data = event.data as { mode: 'chat' | 'plan' | 'execute' };
           useRunStore.getState().setMode(data.mode);
+          if (data.mode === 'chat') {
+            useRunStore.getState().setDiagnostics({
+              activePlanId: null,
+              activePlanSnapshot: null,
+            });
+          }
           break;
         }
 
@@ -239,6 +257,9 @@ export function useAgentEvents(): {
             runStatus: data.status,
             terminalReason: data.terminalReason ?? null,
           });
+          if (data.status !== 'running') {
+            finishCurrentRun();
+          }
           break;
         }
 
@@ -272,11 +293,7 @@ export function useAgentEvents(): {
         }
 
         case 'done': {
-          useMessageStore.getState().setLoading(false);
-          assistantContentRef.current = '';
-          assistantThinkingRef.current = '';
-          assistantMsgIdRef.current = '';
-          isThinkingRef.current = false;
+          finishCurrentRun();
           break;
         }
 
@@ -289,11 +306,7 @@ export function useAgentEvents(): {
               content: (msg?.content ?? '') + `\n\n⚠️ ${data.message}`,
             });
           }
-          useMessageStore.getState().setLoading(false);
-          assistantContentRef.current = '';
-          assistantThinkingRef.current = '';
-          assistantMsgIdRef.current = '';
-          isThinkingRef.current = false;
+          finishCurrentRun();
           break;
         }
       }

@@ -1,6 +1,8 @@
 import type { AgentEventEnvelope, DraftReadyEventData, DocReadyEventData, Plan, PlanOutline } from '@workagent/shared';
 import {
   createPlan,
+  createSession,
+  getSession,
   getPlan,
   updatePlan,
   updateSession,
@@ -73,7 +75,6 @@ export function bindPlanPersistenceBridge(options: PlanPersistenceBridgeOptions)
         mode: 'plan',
         activePlanId: event.plan.id,
       });
-      db.save();
       emitEvent?.(createPlanBridgeEvent(event.plan.sessionId, 'rag_diagnostics', {
         diagnostics: options.retrievalDiagnostics,
       }));
@@ -87,7 +88,6 @@ export function bindPlanPersistenceBridge(options: PlanPersistenceBridgeOptions)
         mode: 'execute',
         activePlanId: event.plan.id,
       });
-      db.save();
       return;
     }
 
@@ -105,7 +105,6 @@ export function bindPlanPersistenceBridge(options: PlanPersistenceBridgeOptions)
           mode: 'execute',
           activePlanId: activePlan.id,
         });
-        db.save();
       }
       return;
     }
@@ -114,7 +113,6 @@ export function bindPlanPersistenceBridge(options: PlanPersistenceBridgeOptions)
       updatePlan(db, activePlan.id, {
         outlineJson: JSON.stringify(activePlan.outline),
       });
-      db.save();
       return;
     }
 
@@ -124,7 +122,6 @@ export function bindPlanPersistenceBridge(options: PlanPersistenceBridgeOptions)
         outlineJson: JSON.stringify(activePlan.outline),
         finalDocPath: activePlan.finalDocPath ?? null,
       });
-      db.save();
       return;
     }
 
@@ -137,7 +134,6 @@ export function bindPlanPersistenceBridge(options: PlanPersistenceBridgeOptions)
         mode: 'chat',
         activePlanId: null,
       });
-      db.save();
       latestPlan = null;
     }
   }));
@@ -196,7 +192,6 @@ export function persistPlanOutput(
       outlineJson: JSON.stringify(plan.outline),
       finalDocPath: docData.filePath,
     });
-    options.db.save();
   }
 
   emitPlanBridgeEvent(
@@ -213,6 +208,7 @@ export function persistPlanOutput(
  * @param plan - 当前计划。
  */
 function persistGeneratedPlan(db: Database, plan: Plan): void {
+  ensurePlanSession(db, plan);
   const existing = getPlan(db, plan.id);
   const outlineJson = JSON.stringify(plan.outline);
   if (!existing) {
@@ -231,6 +227,22 @@ function persistGeneratedPlan(db: Database, plan: Plan): void {
     goal: plan.goal || plan.outline.goal || existing.goal,
     outlineJson,
     status: 'draft',
+  });
+}
+
+/**
+ * 确保计划所属会话存在，避免严格外键下计划持久化失败。
+ * @param db - 数据库实例。
+ * @param plan - 当前计划。
+ */
+function ensurePlanSession(db: Database, plan: Plan): void {
+  if (getSession(db, plan.sessionId)) {
+    return;
+  }
+  createSession(db, {
+    id: plan.sessionId,
+    title: plan.goal || plan.title || plan.outline.title || '计划会话',
+    mode: 'plan',
   });
 }
 

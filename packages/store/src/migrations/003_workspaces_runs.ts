@@ -108,7 +108,7 @@ export function applyMigration003(db: Database, log?: (msg: string) => void, _ft
 
   // 7. 记录迁移版本
   db.prepare(
-    'INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, strftime("%s","now") * 1000)'
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, strftime('%s','now') * 1000)"
   ).run(MIGRATION_003_VERSION);
   log?.(`[Migration 003] Applied version ${MIGRATION_003_VERSION}`);
 }

@@ -71,7 +71,6 @@ async function main(): Promise<void> {
       // 命令处理
       if (trimmed === '/quit') {
         console.log('\n再见！');
-        db.save();
         closeDatabase(db);
         rl.close();
         return;
@@ -167,7 +166,6 @@ async function main(): Promise<void> {
           role: 'assistant',
           content: fullResponse,
         });
-        db.save();
 
         console.log('\n');
       } catch (error) {

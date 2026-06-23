@@ -62,7 +62,6 @@ describe('plan approval flow', () => {
       goal: '写出完整通知',
       outlineJson: JSON.stringify({ title: '生成通知提纲', structure: [] }),
     });
-    db.save();
 
     const bundle = await createDesktopRuntimeBundle({
       db,
@@ -75,7 +74,6 @@ describe('plan approval flow', () => {
       mode: 'execute',
       activePlanId: plan.id,
     });
-    db.save();
 
     const session = getSession(db, 'session-plan-persist');
     const storedPlan = getPlan(db, plan.id);

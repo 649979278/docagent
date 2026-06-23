@@ -13,6 +13,10 @@ files:
   - ../../packages/*/dist/**/*
   - ../../packages/*/package.json
 
+asarUnpack:
+  - node_modules/**/better-sqlite3/**/*.node
+  - node_modules/**/better-sqlite3/build/**/*
+
 extraMetadata:
   main: ./dist/electron/main.js
 

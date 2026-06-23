@@ -128,7 +128,7 @@ describe('RetrievalPipeline budgetTokens 截断', () => {
 
     // 高分chunk优先保留
     if (result.citations.length === 1) {
-      expect(result.citations[0].chunk.score).toBe(0.95);
+      expect(result.citations[0].chunk.content).toContain('高分内容');
     }
   });
 });

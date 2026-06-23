@@ -5,11 +5,10 @@
 
 import { ipcMain } from 'electron';
 import type { IpcHandlerContext } from './context.js';
-import type { AgentMode, AgentEventEnvelope, PlanOutline } from '@workagent/shared';
-import { getSession, createSession, updateSession, approvePlan } from '@workagent/store';
+import type { AgentMode, AgentEventEnvelope } from '@workagent/shared';
+import { getSession, createSession, updateSession } from '@workagent/store';
 import type { AgentWorkerBridge } from '../worker-bridge.js';
 import type { SessionOrchestrator } from '@workagent/agent-core';
-import { approvePlanWithOutline } from '../plan-persistence.js';
 
 /**
  * 聊天 IPC 运行时状态。
@@ -56,67 +55,26 @@ export function registerChatIpc(
 
   // Plan 模式切换
   ipcMain.handle('plan-mode', async (_ev, enabled: boolean, sessionId: string) => {
-    const db = await ctx.ensureDb();
-    const mode = enabled ? 'plan' : 'chat';
-    updateSession(db, sessionId, { mode });
-    db.save();
-    if (state.orchestrator) {
-      state.orchestrator.updateMode(sessionId, mode);
-    }
     const bundle = await ctx.ensureRuntime();
-    if (enabled) {
-      bundle.runtime.getPlanController().enterPlanMode(sessionId);
-    } else {
-      bundle.runtime.getPlanController().cancelPlan();
+    const result = bundle.planService.setPlanMode(sessionId, enabled);
+    if (state.orchestrator) {
+      state.orchestrator.updateMode(sessionId, result.mode);
     }
-    return { mode };
+    return result;
   });
 
   // Plan 审批
   ipcMain.handle('plan-approve', async (_ev, planId: string, approved: boolean, sessionId: string, updatedOutlineJson?: string) => {
-    const db = await ctx.ensureDb();
-    const updatedOutline = parseUpdatedOutline(updatedOutlineJson);
     if (state.useWorkerMode && state.workerBridge?.isAvailable()) {
-      state.workerBridge.planApprove(planId, approved, updatedOutlineJson);
+      state.workerBridge.planApprove(planId, approved, sessionId, updatedOutlineJson);
     }
-    if (!approved) {
-      const bundle = await ctx.ensureRuntime();
-      bundle.runtime.getPlanController().cancelPlan();
-      updateSession(db, sessionId, { mode: 'chat', activePlanId: null });
-      db.save();
-      if (state.orchestrator) {
-        state.orchestrator.updateMode(sessionId, 'chat');
-      }
-      return { planId, approved: false, sessionId };
-    }
-    // 用户批准计划
     const bundle = await ctx.ensureRuntime();
-    approvePlanWithOutline(bundle.runtime, updatedOutline);
-    // 更新数据库
-    approvePlan(db, planId, updatedOutlineJson);
-    updateSession(db, sessionId, { mode: 'execute', activePlanId: planId });
-    db.save();
+    const result = bundle.planService.approve({ planId, approved, sessionId, updatedOutlineJson });
     if (state.orchestrator) {
-      state.orchestrator.updateMode(sessionId, 'execute');
+      state.orchestrator.updateMode(sessionId, approved ? 'execute' : 'chat');
     }
-    return { planId, approved: true, sessionId };
+    return result;
   });
-}
-
-/**
- * 解析前端传回的提纲 JSON。
- * @param updatedOutlineJson - 提纲 JSON 字符串。
- * @returns 解析后的提纲对象。
- */
-function parseUpdatedOutline(updatedOutlineJson?: string): PlanOutline | undefined {
-  if (!updatedOutlineJson) {
-    return undefined;
-  }
-  try {
-    return JSON.parse(updatedOutlineJson) as PlanOutline;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -256,7 +214,6 @@ async function handleChatDirectly(
         ctx.sendAgentEvent(event);
       }
       if (event.type === 'done') {
-        (await ctx.ensureDb()).save();
         break;
       }
     }
@@ -410,7 +367,7 @@ export function createChatRuntimeState(orchestrator: SessionOrchestrator | null)
     currentIterator: null,
     terminalRunIds: new Set(),
     workerBridge: null,
-    useWorkerMode: false,
+    useWorkerMode: true,
     orchestrator,
   };
 }

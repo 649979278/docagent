@@ -11,6 +11,7 @@
  */
 
 import type { RetrievedChunk, SearchOptions } from '@workagent/shared';
+import { countTokens } from '@workagent/shared';
 
 import type { KnowledgeIndex } from './knowledge-index.js';
 import type { OllamaEmbedder } from './embedder.js';
@@ -170,9 +171,7 @@ export function truncateByBudget(
  * @returns 估算的token数
  */
 export function estimateChunkTokens(chunk: RetrievedChunk): number {
-  const charCount = chunk.content.length;
-  // 保守估算：字符数 / 2，最少1
-  return Math.max(1, Math.ceil(charCount / 2));
+  return Math.max(1, countTokens(chunk.content));
 }
 
 // ============================================================
@@ -304,8 +303,9 @@ export class RetrievalPipeline {
       let usedTokens = filteredChunks.reduce((sum, chunk) => sum + estimateChunkTokens(chunk), 0);
 
       if (budgetTokens && usedTokens > budgetTokens) {
+        const budgetCandidates = [...filteredChunks].sort((a, b) => b.score - a.score);
         const truncated = truncateByBudget(
-          filteredChunks.map((chunk, index) => ({
+          budgetCandidates.map((chunk, index) => ({
             refNumber: index + 1,
             refLabel: `[ref_${index + 1}]`,
             chunk,

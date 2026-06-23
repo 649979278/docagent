@@ -100,7 +100,7 @@ async function handleIndexFile(filePath: string, documentId: string, sessionId: 
           createdAt: Date.now(),
         },
       });
-    }, documentId);
+    });
 
     send({
       type: 'index-result',

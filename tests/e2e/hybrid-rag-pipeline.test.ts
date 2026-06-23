@@ -6,7 +6,7 @@
  * 3. RuleBasedQueryRewriter: 停用词过滤、文号提取
  * 4. ScoreAndKeywordGrader: 关键词加分
  * 5. RAGEngine options object 构造
- * 6. RAGEngine.indexDocument 写入 metadataStore
+ * 6. RAGEngine.indexDocument 只负责 chunk + embedding + vector upsert
  * 7. RAGEngine.search 走完整 pipeline
  * 8. 004_chunks_fts 迁移：幂等 ALTER + FTS5 + 回填
  * 9. runtime-factory 注入链路串联
@@ -22,7 +22,6 @@ import {
   ScoreAndKeywordGrader,
   RAGEngine,
 } from '@workagent/rag';
-import type { ChunkMetadataStore } from '@workagent/rag';
 
 // ============================================================
 // 测试工具
@@ -299,7 +298,7 @@ describe('RAGEngine options object 构造', () => {
     expect(results).toHaveLength(1);
   });
 
-  it('indexDocument 写入 metadataStore', async () => {
+  it('indexDocument 只写入向量索引并返回分块', async () => {
     const mockIndex = {
       upsert: vi.fn().mockResolvedValue(undefined),
       search: vi.fn().mockResolvedValue([]),
@@ -312,30 +311,30 @@ describe('RAGEngine options object 构造', () => {
       embed: vi.fn().mockResolvedValue(new Array(1024).fill(0.1)),
       embedBatch: vi.fn().mockResolvedValue([new Array(1024).fill(0.1)]),
     };
-    const metadataStore: ChunkMetadataStore = {
-      upsertChunkMetadata: vi.fn(),
-      deleteChunkMetadata: vi.fn(),
-    };
-
     const engine = new RAGEngine({
       index: mockIndex as any,
       embedder: mockEmbedder as any,
-      metadataStore,
     });
 
-    await engine.indexDocument({
+    const chunks = await engine.indexDocument({
       filePath: '/test/doc.docx',
       fileName: 'doc.docx',
       fileType: 'docx',
       content: '测试内容',
       sections: [{ title: '标题', content: '测试内容', level: 1, locator: '段落1' }],
       metadata: {},
-    }, undefined, 'doc_123');
+    });
 
-    expect(metadataStore.upsertChunkMetadata).toHaveBeenCalled();
-    const callArgs = (metadataStore.upsertChunkMetadata as any).mock.calls[0][0];
-    expect(callArgs[0].documentId).toBe('doc_123');
-    expect(callArgs[0].sourceFile).toBe('/test/doc.docx');
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(mockEmbedder.embedBatch).toHaveBeenCalledWith(chunks.map((chunk) => chunk.content));
+    expect(mockIndex.upsert).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          chunkId: chunks[0].chunkId,
+          content: chunks[0].content,
+        }),
+      ]),
+    );
   });
 
   it('注入完整 components 后 search 走 pipeline', async () => {

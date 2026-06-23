@@ -1,9 +1,9 @@
 /**
- * SQLite数据库初始化和连接管理
- * 使用sql.js（纯JS的SQLite实现，无需native编译）
+ * SQLite 数据库初始化和连接管理。
+ * 底层使用 better-sqlite3，保留项目内既有同步包装 API。
  */
 
-import initSqlJs from 'sql.js';
+import BetterSqlite3 from 'better-sqlite3';
 import { migrations as migrations001 } from './migrations/001_initial.js';
 import { applyMigration002 } from './migrations/002_add_tool_name.js';
 import { applyMigration003, MIGRATION_003_VERSION } from './migrations/003_workspaces_runs.js';
@@ -13,22 +13,22 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
-/** SQL字符串型迁移 */
+/** SQL 字符串型迁移。 */
 interface SqlMigration {
   version: number;
   sql: string;
 }
 
-/** 函数型迁移（需要自定义逻辑，如忽略"列已存在"错误） */
+/** 函数型迁移。 */
 interface FnMigration {
   version: number;
   fn: (db: Database, log: (msg: string) => void, fts5Available: boolean) => void;
 }
 
-/** 迁移项 */
+/** 迁移项。 */
 type MigrationItem = SqlMigration | FnMigration;
 
-/** 所有migration的有序列表 */
+/** 所有 migration 的有序列表。 */
 const migrations: MigrationItem[] = [
   ...migrations001.map(m => ({ version: m.version, sql: m.sql } as SqlMigration)),
   { version: 2, fn: applyMigration002 } as FnMigration,
@@ -36,123 +36,124 @@ const migrations: MigrationItem[] = [
   { version: MIGRATION_004_VERSION, fn: applyMigration004 } as FnMigration,
 ];
 
-/** 数据库配置 */
+/** 数据库配置。 */
 export interface DatabaseConfig {
-  /** 数据库文件路径 */
+  /** 数据库文件路径。 */
   dbPath?: string;
-  /** 日志函数 */
+  /** 日志函数。 */
   log?: (message: string) => void;
 }
 
-/** 包装后的数据库实例，提供类better-sqlite3的同步API */
+/** 包装后的数据库实例，提供项目内统一的同步 API。 */
 export class Database {
-  private db: any;
-  private dbPath: string;
+  private readonly db: BetterSqlite3.Database;
+  readonly dbPath: string;
 
-  constructor(db: any, dbPath: string) {
+  /**
+   * 创建数据库包装实例。
+   * @param db - better-sqlite3 数据库实例。
+   * @param dbPath - 数据库文件路径。
+   */
+  constructor(db: BetterSqlite3.Database, dbPath: string) {
     this.db = db;
     this.dbPath = dbPath;
   }
 
-  /** 执行SQL语句（无返回值），支持多条语句 */
+  /**
+   * 执行 SQL 语句，支持多条语句。
+   * @param sql - SQL 文本。
+   */
   exec(sql: string): void {
-    // sql.js的db.exec()可以执行多条SQL语句（用分号分隔）
-    // 它返回结果数组，但我们对返回值不感兴趣
     this.db.exec(sql);
   }
 
-  /** 执行参数化查询，返回所有行 */
+  /**
+   * 创建预编译语句。
+   * @param sql - SQL 文本。
+   * @returns 语句包装对象。
+   */
   prepare(sql: string): Statement {
-    return new Statement(this.db, sql);
+    return new Statement(this.db.prepare(sql));
   }
 
-  /** 执行事务 */
+  /**
+   * 创建事务函数。
+   * @param fn - 事务内执行的函数。
+   * @returns 可调用事务函数。
+   */
   transaction(fn: () => void): () => void {
-    return () => {
-      this.db.run('BEGIN TRANSACTION');
-      try {
-        fn();
-        this.db.run('COMMIT');
-      } catch (e) {
-        try { this.db.run('ROLLBACK'); } catch { /* ignore if already rolled back */ }
-        throw e;
-      }
-    };
+    return this.db.transaction(fn);
   }
 
-  /** 执行pragma */
-  pragma(pragma: string): void {
-    this.db.run(`PRAGMA ${pragma}`);
+  /**
+   * 执行 PRAGMA 并返回结果。
+   * @param pragma - PRAGMA 表达式，不包含 PRAGMA 关键字。
+   * @returns PRAGMA 返回值。
+   */
+  pragma(pragma: string): unknown {
+    return this.db.pragma(pragma);
   }
 
-  /** 保存数据库到磁盘 */
-  save(): void {
-    const data = this.db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(this.dbPath, buffer);
-  }
-
-  /** 关闭数据库 */
-  close(): void {
-    this.save();
-    this.db.close();
-  }
-
-  /** 获取底层sql.js实例（高级用法） */
-  getSqlJsDb(): any {
+  /**
+   * 获取底层 better-sqlite3 实例。
+   * @returns 原始数据库实例。
+   */
+  getNativeDb(): BetterSqlite3.Database {
     return this.db;
+  }
+
+  /**
+   * 关闭数据库连接。
+   */
+  close(): void {
+    this.db.close();
   }
 }
 
-/** 预编译语句 */
+/** 预编译语句包装。 */
 export class Statement {
-  private db: any;
-  private sql: string;
+  private readonly stmt: BetterSqlite3.Statement;
 
-  constructor(db: any, sql: string) {
-    this.db = db;
-    this.sql = sql;
+  /**
+   * 创建语句包装对象。
+   * @param stmt - better-sqlite3 语句。
+   */
+  constructor(stmt: BetterSqlite3.Statement) {
+    this.stmt = stmt;
   }
 
-  /** 执行并返回所有行 */
+  /**
+   * 执行并返回所有行。
+   * @param params - SQL 参数。
+   * @returns 行数组。
+   */
   all(...params: unknown[]): Record<string, unknown>[] {
-    // sql.js使用bind参数
-    const stmt = this.db.prepare(this.sql);
-    if (params.length > 0) {
-      stmt.bind(params);
-    }
-    const rows: Record<string, unknown>[] = [];
-    while (stmt.step()) {
-      rows.push(stmt.getAsObject());
-    }
-    stmt.free();
-    return rows;
+    return this.stmt.all(...(params as never[])) as Record<string, unknown>[];
   }
 
-  /** 执行并返回第一行 */
+  /**
+   * 执行并返回第一行。
+   * @param params - SQL 参数。
+   * @returns 第一行或 undefined。
+   */
   get(...params: unknown[]): Record<string, unknown> | undefined {
-    const stmt = this.db.prepare(this.sql);
-    if (params.length > 0) {
-      stmt.bind(params);
-    }
-    let row: Record<string, unknown> | undefined;
-    if (stmt.step()) {
-      row = stmt.getAsObject();
-    }
-    stmt.free();
-    return row;
+    return this.stmt.get(...(params as never[])) as Record<string, unknown> | undefined;
   }
 
-  /** 执行并返回变更行数 */
+  /**
+   * 执行写入语句并返回变更行数。
+   * @param params - SQL 参数。
+   * @returns 变更行数。
+   */
   run(...params: unknown[]): { changes: number } {
-    this.db.run(this.sql, params as string[]);
-    return { changes: this.db.getRowsModified() };
+    const info = this.stmt.run(...(params as never[]));
+    return { changes: info.changes };
   }
 }
 
 /**
- * 获取默认数据库路径
- * Windows: %USERPROFILE%/WorkAgent/workagent.db
+ * 获取默认数据库路径。
+ * @returns Windows 用户目录下的 WorkAgent 数据库路径。
  */
 export function getDefaultDbPath(): string {
   const homeDir = os.homedir();
@@ -164,49 +165,27 @@ export function getDefaultDbPath(): string {
 }
 
 /**
- * 初始化SQLite数据库连接并执行migration
+ * 初始化 SQLite 数据库连接并执行 migration。
+ * @param config - 数据库配置。
+ * @returns 数据库实例。
  */
-export async function initDatabase(config: DatabaseConfig = {}): Promise<Database> {
+export function initDatabase(config: DatabaseConfig = {}): Database {
   const dbPath = config.dbPath ?? getDefaultDbPath();
   const log = config.log ?? ((_msg: string) => { /* silent */ });
 
   log(`Initializing database at: ${dbPath}`);
 
-  // 确保目录存在
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // 初始化sql.js
-  const SQL = await initSqlJs();
+  const nativeDb = new BetterSqlite3(dbPath);
+  nativeDb.pragma('foreign_keys = ON');
 
-  // 如果已有数据库文件，加载它
-  let db: any;
-  if (fs.existsSync(dbPath)) {
-    const buffer = fs.readFileSync(dbPath);
-    db = new SQL.Database(new Uint8Array(buffer as any));
-  } else {
-    db = new SQL.Database();
-  }
+  const wrappedDb = new Database(nativeDb, dbPath);
+  const fts5Available = detectFts5(wrappedDb, log);
 
-  // 启用外键约束
-  db.run('PRAGMA foreign_keys = ON');
-
-  const wrappedDb = new Database(db, dbPath);
-
-  // 检测FTS5是否可用
-  let fts5Available = false;
-  try {
-    db.run('CREATE VIRTUAL TABLE _fts5_check USING fts5(x)');
-    db.run('DROP TABLE _fts5_check');
-    fts5Available = true;
-  } catch {
-    fts5Available = false;
-    log('FTS5 not available, full-text search will use LIKE fallback');
-  }
-
-  // 执行migration
   runMigrations(wrappedDb, log, fts5Available);
 
   log('Database initialized successfully');
@@ -214,8 +193,27 @@ export async function initDatabase(config: DatabaseConfig = {}): Promise<Databas
 }
 
 /**
- * 执行数据库migration
- * @param fts5Available - FTS5是否可用，不可用时跳过相关语句
+ * 检测当前 SQLite 构建是否支持 FTS5。
+ * @param db - 数据库实例。
+ * @param log - 日志函数。
+ * @returns 是否支持 FTS5。
+ */
+function detectFts5(db: Database, log: (msg: string) => void): boolean {
+  try {
+    db.exec('CREATE VIRTUAL TABLE _fts5_check USING fts5(x)');
+    db.exec('DROP TABLE _fts5_check');
+    return true;
+  } catch {
+    log('FTS5 not available, full-text search will use LIKE fallback');
+    return false;
+  }
+}
+
+/**
+ * 执行数据库 migration。
+ * @param db - 数据库实例。
+ * @param log - 日志函数。
+ * @param fts5Available - FTS5 是否可用。
  */
 function runMigrations(db: Database, log: (msg: string) => void, fts5Available: boolean): void {
   let currentVersion = 0;
@@ -233,7 +231,7 @@ function runMigrations(db: Database, log: (msg: string) => void, fts5Available: 
       if ('sql' in migration) {
         const sql = fts5Available ? migration.sql : removeFts5Statements(migration.sql);
         db.exec(sql);
-      } else if ('fn' in migration) {
+      } else {
         migration.fn(db, log, fts5Available);
       }
 
@@ -243,18 +241,19 @@ function runMigrations(db: Database, log: (msg: string) => void, fts5Available: 
 }
 
 /**
- * 从SQL中移除FTS5相关的完整语句块
+ * 从 SQL 中移除 FTS5 相关的完整语句块。
+ * @param sql - 原始 SQL。
+ * @returns 移除 FTS5 语句后的 SQL。
  */
 function removeFts5Statements(sql: string): string {
-  // 移除CREATE VIRTUAL TABLE...USING fts5(...); 跨行
   let result = sql.replace(/CREATE\s+VIRTUAL\s+TABLE[\s\S]*?USING\s+fts5[\s\S]*?\);/gi, '');
-  // 移除CREATE TRIGGER...messages_fts...END;
   result = result.replace(/CREATE\s+TRIGGER[\s\S]*?messages_fts[\s\S]*?END;/gi, '');
   return result;
 }
 
 /**
- * 关闭数据库连接
+ * 关闭数据库连接。
+ * @param db - 数据库实例。
  */
 export function closeDatabase(db: Database): void {
   db.close();

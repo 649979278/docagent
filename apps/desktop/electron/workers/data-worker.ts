@@ -5,6 +5,7 @@
  */
 
 import { parentPort } from 'node:worker_threads';
+import { createLogger } from '@workagent/shared';
 import {
   initDatabase,
   closeDatabase,
@@ -74,15 +75,17 @@ type DataWorkerResponse =
 /** DataWorker运行时状态 */
 let db: Database | null = null;
 let requestId = 0;
+/** DataWorker 结构化日志。 */
+const logger = createLogger('data-worker');
 
 /**
  * 初始化数据库
  */
 async function initialize(dbPath?: string): Promise<void> {
   try {
-    db = await initDatabase({
+    db = initDatabase({
       dbPath,
-      log: (msg: string) => console.log('[DataWorker]', msg),
+      log: (msg: string) => logger.debug({ component: 'db' }, msg),
     });
     send({ type: 'ready' });
   } catch (error) {
@@ -95,7 +98,6 @@ async function initialize(dbPath?: string): Promise<void> {
  */
 function saveDb(): void {
   if (db) {
-    db.save();
   }
 }
 

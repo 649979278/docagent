@@ -6,7 +6,7 @@
  */
 
 import type { ContextBudget, AgentMode } from '@workagent/shared';
-import { DEFAULT_CONTEXT_LENGTH } from '@workagent/shared';
+import { DEFAULT_CONTEXT_LENGTH, countTokens } from '@workagent/shared';
 
 // ============================================================
 // 预算分配常量
@@ -281,9 +281,7 @@ export class BudgetManager {
  * @returns 估算的token数
  */
 export function estimateTokens(content: string): number {
-  // 粗略估算：中文约1.5字/token，英文约4字/token
-  // 混合文本取平均约2字/token
-  return Math.ceil(content.length / 2);
+  return countTokens(content);
 }
 
 /**

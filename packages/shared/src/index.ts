@@ -144,3 +144,6 @@ export {
   LOGS_DIR_NAME,
   TEMPLATES_DIR_NAME,
 } from './constants.js';
+
+export { countTokens } from './tokens.js';
+export { createLogger } from './logger.js';

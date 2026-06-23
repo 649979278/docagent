@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createDocument, createSession, createWorkspace, initDatabase, listDocumentsByWorkspace, getSessionWorkspaceIds } from '@workagent/store';
@@ -9,10 +10,10 @@ import { createDesktopRuntimeBundle } from '../../apps/desktop/electron/runtime-
  */
 describe('workspace desktop closure', () => {
   it('supports workspace docs listing, document move, and session unbind flow', async () => {
-    const tempDir = path.join(process.cwd(), `.tmp-workspace-closure-${Date.now()}`);
-    const db = await initDatabase({
-      dbPath: `${tempDir}.db`,
-    });
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workagent-workspace-closure-'));
+    const dbPath = path.join(tempDir, 'workspace.db');
+    const db = initDatabase({ dbPath });
+    try {
     fs.mkdirSync(tempDir, { recursive: true });
     fs.mkdirSync(path.join(tempDir, 'source'), { recursive: true });
     fs.mkdirSync(path.join(tempDir, 'target'), { recursive: true });
@@ -41,7 +42,6 @@ describe('workspace desktop closure', () => {
       sha256: 'hash',
       sourceWorkspaceId: 'ws-source',
     });
-    db.save();
 
     const bundle = await createDesktopRuntimeBundle({
       db,
@@ -53,10 +53,13 @@ describe('workspace desktop closure', () => {
 
     db.prepare('UPDATE documents SET source_workspace_id = ? WHERE id = ?').run('ws-target', 'doc-workspace-closure');
     db.prepare('INSERT OR IGNORE INTO session_workspaces (session_id, workspace_id) VALUES (?, ?)').run('session-workspace', 'ws-source');
-    db.save();
 
     expect(listDocumentsByWorkspace(db, 'ws-source')).toHaveLength(0);
     expect(listDocumentsByWorkspace(db, 'ws-target')).toHaveLength(1);
     expect(getSessionWorkspaceIds(db, 'session-workspace')).toContain('ws-source');
+    } finally {
+      db.close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

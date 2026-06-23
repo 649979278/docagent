@@ -10,8 +10,13 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist"
   },
+  "dependencies": {
+    "js-tiktoken": "^1.0.21",
+    "pino": "^9.7.0"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "pino-pretty": "^13.1.2",
     "typescript": "^5.6.0",
     "vitest": "^4.1.8"
   }

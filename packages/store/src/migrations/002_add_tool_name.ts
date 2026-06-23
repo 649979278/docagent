@@ -18,8 +18,6 @@ import type { Database } from '../database.js';
  */
 export function applyMigration002(db: Database, log: (msg: string) => void, _fts5Available?: boolean): void {
   // 检查tool_name列是否已存在
-  const tableInfo = db.pragma('table_info(messages)');
-  // sql.js的pragma返回行可能格式不同，用prepare查询更可靠
   let hasToolName = false;
   try {
     const columns = db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;

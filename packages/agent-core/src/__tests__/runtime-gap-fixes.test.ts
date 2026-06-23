@@ -101,9 +101,7 @@ function createMockDatabase(): Database {
     exec: vi.fn(),
     transaction: vi.fn().mockImplementation((fn: () => void) => fn),
     pragma: vi.fn(),
-    save: vi.fn(),
     close: vi.fn(),
-    getSqlJsDb: vi.fn().mockReturnValue({}),
   } as unknown as Database;
 }
 

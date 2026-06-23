@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { countTokens } from '@workagent/shared';
 import {
   normalizeQuery,
   packCitations,
@@ -129,10 +130,11 @@ describe('estimateChunkTokens', () => {
   });
 
   it('中文内容估算合理', () => {
-    // 100字 ≈ 50 token
-    const chunk = createChunk({ content: '测'.repeat(100) });
+    const content = '测'.repeat(100);
+    const chunk = createChunk({ content });
     const tokens = estimateChunkTokens(chunk);
-    expect(tokens).toBe(50);
+    expect(tokens).toBe(countTokens(content));
+    expect(tokens).toBeGreaterThan(0);
   });
 
   it('短内容最少1 token', () => {

@@ -1,10 +1,8 @@
 import path from 'node:path';
-import fs from 'node:fs';
-import type { AgentEventEnvelope } from '@workagent/shared';
+import type { AgentEventEnvelope, PermissionDecision, ToolSafety } from '@workagent/shared';
 import type { ModelProvider, OpenAICompatConfig } from '@workagent/model-provider';
 import { MockModelProvider, OllamaNativeProvider, OpenAICompatProvider } from '@workagent/model-provider';
 import {
-  createDocument,
   createIndexJob,
   getIndexJob,
   initDatabase,
@@ -48,11 +46,23 @@ import {
   BGEReranker,
   ScoreAndKeywordGrader,
   type KnowledgeIndex,
-  type ChunkMetadataStore,
 } from '@workagent/rag';
 import { markdownToDocx } from '@workagent/docgen';
 import { detectOllama, getAppDataDir } from '@workagent/windows-tools';
 import { isModelAvailable, REQUIRED_OLLAMA_MODELS, OLLAMA_DEFAULT_BASE_URL } from '@workagent/shared';
+import { KnowledgeService } from './services/knowledge-service.js';
+import { PlanService } from './services/plan-service.js';
+
+/** 工具权限审批策略。 */
+export type PermissionApprovalPolicy = 'ask_every_time' | 'ask_dangerous' | 'full_access';
+
+/** 工具权限请求回调。 */
+export type RuntimePermissionRequestCallback = (
+  toolName: string,
+  input: Record<string, unknown>,
+  safety: ToolSafety,
+  reason: string,
+) => Promise<PermissionDecision>;
 
 /**
  * Runtime 工厂配置。
@@ -62,12 +72,24 @@ export interface DesktopRuntimeFactoryOptions {
   db: Database;
   /** 是否自动允许交互式权限请求。 */
   autoApprovePermissions?: boolean;
+  /** 用户选择的工具权限审批策略。 */
+  permissionPolicy?: PermissionApprovalPolicy;
+  /** 真实权限请求回调，用于每次询问或危险操作询问。 */
+  permissionRequestCallback?: RuntimePermissionRequestCallback;
   /** 打开兼容模型配置的回调。 */
   getOpenAICompatConfig?: () => OpenAICompatConfig | null;
   /** 事件回调，用于透传计划控制器或索引进度事件。 */
   emitEvent?: (event: AgentEventEnvelope) => void;
   /** 应用数据目录，用于落盘 transcript / session memory。 */
   appDataDir?: string;
+  /** 测试或特殊场景注入的模型提供者。 */
+  modelProvider?: ModelProvider;
+  /** 测试或诊断场景覆盖检索组件。 */
+  retrievalComponentsOverride?: Partial<{
+    queryRewriter: RuleBasedQueryRewriter | OllamaQueryRewriter;
+    reranker: PassThroughReranker | BGEReranker;
+    relevanceGrader: ScoreAndKeywordGrader;
+  }>;
 }
 
 /**
@@ -90,6 +112,10 @@ export interface DesktopRuntimeBundle {
   runtime: AgentRuntime;
   /** 向量存储后端。 */
   vectorStore: KnowledgeIndex;
+  /** 知识库应用服务。 */
+  knowledgeService: KnowledgeService;
+  /** 计划应用服务。 */
+  planService: PlanService;
   /** 会话恢复函数。通过 transcript + DB 恢复会话状态快照。 */
   resumeSession: (sessionId: string) => ReturnType<typeof resumeSession>;
   /** 当前检索组件诊断快照。 */
@@ -105,31 +131,42 @@ export async function createDesktopRuntimeBundle(
   options: DesktopRuntimeFactoryOptions,
 ): Promise<DesktopRuntimeBundle> {
   const appDataDir = options.appDataDir ?? getAppDataDir();
-  const modelProvider = await createModelProvider(options.getOpenAICompatConfig);
+  const modelProvider = options.modelProvider ?? await createModelProvider(options.getOpenAICompatConfig);
   const ingestPipeline = createIngestPipeline();
   const vectorStore = await createVectorStore(appDataDir);
   const embedder = new OllamaEmbedder(modelProvider);
-
-  // 构造 ChunkMetadataStore（注入到 RAGEngine，用于 BM25 全文写入）
-  const chunkMetadataStore = createChunkMetadataStore(options.db);
 
   // 构造 BM25Search（注入 queryFn，由数据库驱动）
   const bm25Search = createBM25Search(options.db);
 
   // 根据 Ollama 可用性组装可降级检索组件
-  const components = await createRetrievalComponents(modelProvider);
+  const components = options.modelProvider
+    ? createMockRetrievalComponents()
+    : await createRetrievalComponents(modelProvider);
+  const retrievalComponents = {
+    ...components,
+    ...options.retrievalComponentsOverride,
+  };
+  retrievalComponents.diagnostics = createRetrievalDiagnostics(
+    retrievalComponents.queryRewriter,
+    retrievalComponents.reranker,
+    retrievalComponents.relevanceGrader,
+  );
 
   // 构造 RAGEngine（options object 模式）
   const ragEngine = new RAGEngine({
     index: vectorStore,
     embedder,
-    metadataStore: chunkMetadataStore,
     components: {
       sparseSearcher: bm25Search,
-      ...components,
+      ...retrievalComponents,
     },
   });
-  const permissionBroker = createPermissionBroker(options.db, options.autoApprovePermissions ?? false);
+  const permissionBroker = createPermissionBroker(
+    options.db,
+    options.permissionPolicy ?? (options.autoApprovePermissions ? 'full_access' : 'ask_every_time'),
+    options.permissionRequestCallback,
+  );
   const registry = new ToolRegistry();
   let planBridgeOptions: PlanPersistenceBridgeOptions | null = null;
   const outputObserver: ToolExecutionObserver = {
@@ -159,11 +196,20 @@ export async function createDesktopRuntimeBundle(
     observer: outputObserver,
   });
 
+  const knowledgeService = new KnowledgeService({
+    db: options.db,
+    ingestPipeline,
+    ragEngine,
+    modelProvider,
+  });
+
   registerTools(registry, {
     db: options.db,
     modelProvider,
     ingestPipeline,
     ragEngine,
+    knowledgeService,
+    retrievalDiagnostics: retrievalComponents.diagnostics,
     emitEvent: options.emitEvent,
   });
 
@@ -172,6 +218,7 @@ export async function createDesktopRuntimeBundle(
     transcriptDir: path.join(appDataDir, 'transcripts'),
     sessionMemoryDir: path.join(appDataDir, 'session-memory'),
   });
+  const planService = new PlanService({ db: options.db, runtime });
 
   planBridgeOptions = {
     db: options.db,
@@ -181,7 +228,7 @@ export async function createDesktopRuntimeBundle(
   };
   bindPlanPersistenceBridge(planBridgeOptions);
   bindPlanControllerEvents(runtime, options.emitEvent);
-  await reconcileDeletedKnowledge(options.db, ragEngine);
+  await knowledgeService.reconcileDeletedKnowledge();
 
   // 构造 RunLookupStore（注入到 resumeSession，不依赖 @workagent/store）
   const runLookup = createRunLookupStore(options.db);
@@ -196,40 +243,11 @@ export async function createDesktopRuntimeBundle(
     ragEngine,
     runtime,
     vectorStore,
+    knowledgeService,
+    planService,
     resumeSession: (sessionId: string) => resumeSession(sessionId, transcriptDir, runLookup),
-    retrievalDiagnostics: components.diagnostics,
+    retrievalDiagnostics: retrievalComponents.diagnostics,
   };
-}
-
-/**
- * 清理已从磁盘删除但仍残留在数据库和向量库中的知识条目。
- * @param db - 数据库实例。
- * @param ragEngine - RAG 引擎。
- */
-async function reconcileDeletedKnowledge(db: Database, ragEngine: RAGEngine): Promise<void> {
-  const documents = db.prepare(
-    'SELECT id, path FROM documents',
-  ).all() as Array<{ id: string; path: string }>;
-
-  for (const document of documents) {
-    if (fs.existsSync(document.path)) {
-      continue;
-    }
-
-    try {
-      await ragEngine.removeDocument(document.path);
-    } catch {
-      // 清理向量失败不应阻塞后续回收
-    }
-
-    try {
-      db.prepare('DELETE FROM documents WHERE id = ?').run(document.id);
-    } catch {
-      // 文档记录清理失败也不阻塞
-    }
-  }
-
-  db.save();
 }
 
 /**
@@ -248,7 +266,7 @@ export async function createRuntimeBundleForTest(
   providerKind: string;
   hasPlanController: boolean;
 }> {
-  const db = options?.db ?? await initDatabase({
+  const db = options?.db ?? initDatabase({
     dbPath: path.join(getAppDataDir(), `.test-${mode}-runtime.db`),
   });
   const bundle = await createDesktopRuntimeBundle({
@@ -277,11 +295,17 @@ async function createModelProvider(
   getOpenAICompatConfig?: () => OpenAICompatConfig | null,
 ): Promise<ModelProvider> {
   const status = await detectOllama();
+  const compatConfig = getOpenAICompatConfig?.() ?? null;
   if (status.running) {
-    return new OllamaNativeProvider();
+    return new OllamaNativeProvider(compatConfig ? {
+      chatModel: compatConfig.chatModel,
+      embeddingModel: compatConfig.embeddingModel,
+      baseUrl: compatConfig.baseUrl,
+      temperature: compatConfig.temperature,
+      maxTokens: compatConfig.maxTokens,
+    } : undefined);
   }
 
-  const compatConfig = getOpenAICompatConfig?.() ?? null;
   if (compatConfig) {
     const compatProvider = new OpenAICompatProvider(compatConfig);
     if (await compatProvider.isAvailable()) {
@@ -330,7 +354,11 @@ async function createVectorStore(appDataDir: string): Promise<KnowledgeIndex> {
  * @param autoApprovePermissions - 是否自动批准。
  * @returns 权限代理。
  */
-function createPermissionBroker(db: Database, autoApprovePermissions: boolean): PermissionBroker {
+function createPermissionBroker(
+  db: Database,
+  policy: PermissionApprovalPolicy,
+  permissionRequestCallback?: RuntimePermissionRequestCallback,
+): PermissionBroker {
   const broker = new PermissionBroker({
     saveDecision(toolName, inputPattern, decision) {
       savePermissionDecision(db, { toolName, inputPattern, decision });
@@ -347,8 +375,22 @@ function createPermissionBroker(db: Database, autoApprovePermissions: boolean): 
     },
   });
 
-  if (autoApprovePermissions) {
-    broker.setRequestCallback(async () => ({ allowed: true, remember: false, reason: '自动授权' }));
+  if (policy === 'full_access') {
+    broker.setRequestCallback(async () => ({ allowed: true, remember: false, reason: '完全访问权限：自动授权' }));
+  } else if (policy === 'ask_dangerous') {
+    broker.setRequestCallback(async (toolName, input, safety, reason) => {
+      const dangerous = safety === 'overwrite_output' || safety === 'command' || safety === 'destructive';
+      if (dangerous && permissionRequestCallback) {
+        return permissionRequestCallback(toolName, input, safety, reason);
+      }
+      return {
+        allowed: !dangerous,
+        remember: false,
+        reason: dangerous ? reason || '危险操作需要用户批准' : '仅危险询问：非危险操作自动允许',
+      };
+    });
+  } else if (permissionRequestCallback) {
+    broker.setRequestCallback(permissionRequestCallback);
   }
 
   return broker;
@@ -366,6 +408,8 @@ function registerTools(
     modelProvider: ModelProvider;
     ingestPipeline: IngestPipeline;
     ragEngine: RAGEngine;
+    knowledgeService: KnowledgeService;
+    retrievalDiagnostics: RetrievalDiagnosticsSnapshot;
     emitEvent?: (event: AgentEventEnvelope) => void;
   },
 ): void {
@@ -389,18 +433,12 @@ function registerTools(
      * @returns 索引任务。
      */
     async createIndexJob(filePath) {
-      const docId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const result = await deps.knowledgeService.addDocument(filePath);
+      if (result.status === 'failed' || !result.documentId) {
+        throw new Error(result.error ?? '知识库索引失败');
+      }
       const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      createDocument(deps.db, {
-        id: docId,
-        path: filePath,
-        fileName: path.basename(filePath),
-        fileType: path.extname(filePath).slice(1).toLowerCase(),
-        sha256: '',
-        embeddingModel: deps.modelProvider.getConfig().embeddingModel,
-      });
-      const job = createIndexJob(deps.db, { id: jobId, documentId: docId });
-      deps.db.save();
+      const job = createIndexJob(deps.db, { id: jobId, documentId: result.documentId });
       return {
         id: job.id,
         documentId: job.documentId,
@@ -432,6 +470,25 @@ function registerTools(
   };
 
   registry.register(new RagSearchTool(deps.ragEngine) as any);
+  if (deps.emitEvent) {
+    const ragSearchTool = registry.getTool('rag_search');
+    const originalCall = ragSearchTool?.call.bind(ragSearchTool);
+    if (ragSearchTool && originalCall) {
+      ragSearchTool.call = async (input, context) => {
+        const result = await originalCall(input, context);
+        deps.emitEvent?.({
+          sessionId: context.sessionId,
+          turnId: '',
+          sequence: Date.now(),
+          type: 'rag_diagnostics',
+          data: { diagnostics: deps.retrievalDiagnostics },
+          createdAt: Date.now(),
+          source: 'runtime',
+        } as AgentEventEnvelope);
+        return result;
+      };
+    }
+  }
   registry.register(new DocReadTool(deps.ingestPipeline as any) as any);
   registry.register(new FileListTool() as any);
   registry.register(new KnowledgeAddTool(indexManager as any) as any);
@@ -488,41 +545,19 @@ function bindPlanControllerEvents(
         type: 'mode_change',
         data: { mode: 'execute' },
       });
+    } else if (event.type === 'plan_cancelled') {
+      emitEvent({
+        ...base,
+        type: 'mode_change',
+        data: { mode: 'chat' },
+      });
+      emitEvent({
+        ...base,
+        type: 'phase_change',
+        data: { phase: 'PLAN_COLLECT' },
+      });
     }
   });
-}
-
-/**
- * 创建 ChunkMetadataStore 实现。
- * 向 chunks 表写入全文内容和来源文件路径，供 BM25 检索使用。
- * @param db - 数据库实例。
- * @returns ChunkMetadataStore 实现。
- */
-function createChunkMetadataStore(db: Database): ChunkMetadataStore {
-  return {
-    /**
-     * 批量写入块元数据。
-     * 使用 INSERT OR REPLACE 确保 upsert 语义。
-     * documentId 由调用方从外部上下文提供。
-     */
-    upsertChunkMetadata(chunks) {
-      const stmt = db.prepare(
-        `INSERT OR REPLACE INTO chunks (id, document_id, chunk_index, content_preview, source_locator, content, source_file, token_count, created_at)
-         VALUES (?, ?, 0, ?, '', ?, ?, 0, strftime('%s','now') * 1000)`,
-      );
-      for (const c of chunks) {
-        stmt.run(c.chunkId, c.documentId ?? '', c.content.slice(0, 100), c.content, c.sourceFile);
-      }
-      db.save();
-    },
-    /**
-     * 删除指定文档的所有块元数据。
-     */
-    deleteChunkMetadata(documentId) {
-      db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
-      db.save();
-    },
-  };
 }
 
 /**
@@ -599,19 +634,59 @@ async function createRetrievalComponents(modelProvider: ModelProvider): Promise<
     queryRewriter,
     reranker,
     relevanceGrader,
-    diagnostics: {
+    diagnostics: createRetrievalDiagnostics(queryRewriter, reranker, relevanceGrader),
+  };
+}
+
+/**
+ * 创建可反映实时 fallback 状态的检索诊断快照。
+ * @param queryRewriter - 查询重写器。
+ * @param reranker - 重排器。
+ * @param relevanceGrader - 相关性评分器。
+ * @returns 检索组件诊断对象。
+ */
+function createRetrievalDiagnostics(
+  queryRewriter: RuleBasedQueryRewriter | OllamaQueryRewriter,
+  reranker: PassThroughReranker | BGEReranker,
+  relevanceGrader: ScoreAndKeywordGrader,
+): RetrievalDiagnosticsSnapshot {
+  return {
       queryRewriter: {
         name: queryRewriter.constructor.name,
-        fallback: queryRewriter instanceof RuleBasedQueryRewriter,
+        get fallback() {
+          return queryRewriter.getDiagnostics?.().fallback ?? queryRewriter instanceof RuleBasedQueryRewriter;
+        },
       },
       reranker: {
         name: reranker.constructor.name,
-        fallback: reranker instanceof PassThroughReranker,
+        get fallback() {
+          return reranker.getDiagnostics?.().fallback ?? reranker instanceof PassThroughReranker;
+        },
       },
       relevanceGrader: {
         name: relevanceGrader.constructor.name,
       },
-    },
+  };
+}
+
+/**
+ * 创建测试注入模型时使用的快速检索组件，避免普通 E2E 探测真实 Ollama。
+ * @returns 可插拔检索组件。
+ */
+function createMockRetrievalComponents(): {
+  queryRewriter: RuleBasedQueryRewriter;
+  reranker: PassThroughReranker;
+  relevanceGrader: ScoreAndKeywordGrader;
+  diagnostics: RetrievalDiagnosticsSnapshot;
+} {
+  const queryRewriter = new RuleBasedQueryRewriter();
+  const reranker = new PassThroughReranker();
+  const relevanceGrader = new ScoreAndKeywordGrader();
+  return {
+    queryRewriter,
+    reranker,
+    relevanceGrader,
+    diagnostics: createRetrievalDiagnostics(queryRewriter, reranker, relevanceGrader),
   };
 }
 

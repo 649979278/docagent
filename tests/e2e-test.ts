@@ -419,7 +419,6 @@ async function main(): Promise<void> {
   // ──────────────────────────────────────────────────────
   console.log('\n━━━ 测试9: 数据库持久化 ━━━');
 
-  db.save();
   // 使用AgentRuntime测试中创建的session来检查持久化
   const allMessages = getSessionMessages(db, sessionId);
   assert(allMessages.length > 0, `会话消息数: ${allMessages.length}`);
@@ -447,7 +446,6 @@ async function main(): Promise<void> {
       role: 'assistant',
       content: '这是助手回复',
     });
-    db.save();
     const persistMessages = getSessionMessages(db, testSessionId);
     assert(persistMessages.length >= 2, `CRUD消息数: ${persistMessages.length}`);
     assert(persistMessages.some((m) => m.role === 'user'), 'CRUD包含用户消息');

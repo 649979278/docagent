@@ -4,7 +4,7 @@
  */
 
 import type { Message, ToolCall } from '@workagent/shared';
-import { COMPACT_KEEP_RECENT_MESSAGES, MAX_TOOL_RESULT_TOKENS } from '@workagent/shared';
+import { COMPACT_KEEP_RECENT_MESSAGES, MAX_TOOL_RESULT_TOKENS, countTokens } from '@workagent/shared';
 
 // ============================================================
 // 微压缩逻辑
@@ -169,5 +169,5 @@ function estimateMessagesTokens(messages: Message[]): number {
  * @returns 估算的token数
  */
 function estimateTokens(content: string): number {
-  return Math.ceil(content.length / 2);
+  return countTokens(content);
 }

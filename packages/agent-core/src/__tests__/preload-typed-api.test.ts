@@ -65,13 +65,10 @@ interface KnowledgeAddResult {
 
 /** models-status 返回类型 */
 interface ModelsStatusResult {
-  providers: Array<{
-    name: string;
-    available: boolean;
-    models: string[];
-  }>;
-  activeModel: string;
-  health: boolean;
+  ollama: 'running' | 'not_installed' | 'start_failed' | 'unavailable';
+  chatModel: { name: string; available: boolean };
+  embeddingModel: { name: string; available: boolean };
+  models: Array<{ name: string; size?: number }>;
 }
 
 /** session-resume 返回类型 */
@@ -173,16 +170,14 @@ describe('Preload 类型契约', () => {
 
   it('models-status 返回结构正确', () => {
     const result: ModelsStatusResult = {
-      providers: [
-        { name: 'ollama', available: true, models: ['qwen3.5:9b'] },
-        { name: 'openai-compat', available: false, models: [] },
-      ],
-      activeModel: 'qwen3.5:9b',
-      health: true,
+      ollama: 'running',
+      chatModel: { name: 'qwen3.5:9b', available: true },
+      embeddingModel: { name: 'bge-m3', available: true },
+      models: [{ name: 'qwen3.5:9b' }],
     };
-    expect(result.providers).toHaveLength(2);
-    expect(result.activeModel).toBe('qwen3.5:9b');
-    expect(result.health).toBe(true);
+    expect(result.ollama).toBe('running');
+    expect(result.chatModel.name).toBe('qwen3.5:9b');
+    expect(result.embeddingModel.name).toBe('bge-m3');
   });
 
   it('chat-abort 返回结构正确', () => {

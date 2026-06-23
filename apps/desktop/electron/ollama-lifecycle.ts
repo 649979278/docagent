@@ -3,7 +3,7 @@
  * 参考Jan的Nitro sidecar管理模式
  */
 
-import { OLLAMA_HEALTH_CHECK_INTERVAL, OLLAMA_MAX_RESTART_ATTEMPTS } from '@workagent/shared';
+import { createLogger, OLLAMA_HEALTH_CHECK_INTERVAL, OLLAMA_MAX_RESTART_ATTEMPTS } from '@workagent/shared';
 import { checkOllamaRunning, startOllama, findOllamaBinary } from '@workagent/windows-tools';
 
 /** Ollama状态 */
@@ -13,6 +13,7 @@ export type OllamaLifecycleStatus = 'running' | 'not_installed' | 'start_failed'
 export class OllamaLifecycle {
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private restartAttempts = 0;
+  private readonly logger = createLogger('ollama-lifecycle');
 
   /**
    * 初始化：检测→引导→启动
@@ -58,13 +59,13 @@ export class OllamaLifecycle {
    */
   private async handleCrash(): Promise<void> {
     if (this.restartAttempts >= OLLAMA_MAX_RESTART_ATTEMPTS) {
-      console.error('Ollama crashed and max restart attempts reached');
+      this.logger.error({ component: 'ollama', attempts: this.restartAttempts }, 'Ollama crashed and max restart attempts reached');
       return;
     }
 
     this.restartAttempts++;
     const delay = Math.min(1000 * Math.pow(2, this.restartAttempts), 30000);
-    console.log(`Ollama crashed, retrying in ${delay}ms (attempt ${this.restartAttempts})`);
+    this.logger.warn({ component: 'ollama', delay, attempt: this.restartAttempts }, 'Ollama crashed, retrying');
 
     await new Promise(resolve => setTimeout(resolve, delay));
 

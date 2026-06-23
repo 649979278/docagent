@@ -12,16 +12,18 @@
  * - ipc/settings-ipc.ts — 设置、模型状态、文件对话框
  */
 
-import { ipcMain, BrowserWindow } from 'electron';
-import type { AgentEventEnvelope } from '@workagent/shared';
+import { ipcMain, BrowserWindow, dialog } from 'electron';
+import type { AgentEventEnvelope, PermissionDecision, ToolSafety } from '@workagent/shared';
+import { DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL, OLLAMA_DEFAULT_BASE_URL } from '@workagent/shared';
 import type { OpenAICompatConfig } from '@workagent/model-provider';
 import { initDatabase, closeDatabase, createSession, listSessions, deleteSession, getSession, updateSession, getSessionMessages } from '@workagent/store';
 import { getSetting } from '@workagent/store';
 import type { Database } from '@workagent/store';
 import { SessionOrchestrator } from '@workagent/agent-core';
 import { AgentWorkerBridge } from './worker-bridge.js';
-import { createDesktopRuntimeBundle } from './runtime-factory.js';
+import { createDesktopRuntimeBundle, type PermissionApprovalPolicy } from './runtime-factory.js';
 import { getAppDataDir } from '@workagent/windows-tools';
+import { createLogger } from '@workagent/shared';
 import type { IpcHandlerContext } from './ipc/context.js';
 import { registerChatIpc, createChatRuntimeState } from './ipc/chat-ipc.js';
 import type { ChatRuntimeState } from './ipc/chat-ipc.js';
@@ -29,6 +31,27 @@ import { registerKnowledgeIpc } from './ipc/knowledge-ipc.js';
 import { registerSettingsIpc } from './ipc/settings-ipc.js';
 import { registerWorkspaceIpc } from './ipc/workspace-ipc.js';
 import type { DesktopRuntimeBundle } from './runtime-factory.js';
+
+const logger = createLogger('desktop-ipc');
+
+/**
+ * 将数据库消息记录转换为 preload 声明的会话消息 DTO。
+ * @param message - store 层消息记录。
+ * @returns renderer 可直接展示的消息对象。
+ */
+function toSessionMessageDto(message: ReturnType<typeof getSessionMessages>[number]): {
+  id: string;
+  role: string;
+  content: string;
+  timestamp: number;
+} {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    timestamp: message.createdAt,
+  };
+}
 
 /**
  * IPC 处理器。
@@ -68,7 +91,6 @@ export class IpcHandlers {
       const db = await this.ensureDb();
       const id = `session_${Date.now()}`;
       const session = createSession(db, { id, title: title ?? '新对话' });
-      db.save();
       return session;
     });
 
@@ -86,13 +108,19 @@ export class IpcHandlers {
         }
       }
       deleteSession(db, sessionId);
-      db.save();
       return { success: true };
+    });
+
+    ipcMain.handle('session-update-title', async (_ev, sessionId: string, title: string) => {
+      const db = await this.ensureDb();
+      updateSession(db, sessionId, { title });
+      const session = getSession(db, sessionId);
+      return { success: true, session };
     });
 
     ipcMain.handle('session-messages', async (_ev, sessionId: string) => {
       const db = await this.ensureDb();
-      return getSessionMessages(db, sessionId);
+      return getSessionMessages(db, sessionId).map(toSessionMessageDto);
     });
 
     ipcMain.handle('session-resume', async (_ev, sessionId: string) => {
@@ -112,8 +140,15 @@ export class IpcHandlers {
     registerKnowledgeIpc(ctx);
     registerWorkspaceIpc(ctx);
     registerSettingsIpc(ctx, (changedKeys) => {
-      // 如果更新了 OpenAI 兼容配置，标记需要重初始化
-      if (changedKeys.some(k => k === 'openai_compat_url' || k === 'openai_compat_model')) {
+      // 模型与权限策略会影响 runtime/worker 装配，必须重初始化。
+      if (changedKeys.some(k => [
+        'openai_compat_url',
+        'openai_compat_model',
+        'openai_compat_embed_model',
+        'openai_compat_api_key',
+        'permission_policy',
+        'reasoning_level',
+      ].includes(k))) {
         this.needsRuntimeReinit = true;
       }
     });
@@ -137,8 +172,8 @@ export class IpcHandlers {
    */
   private async ensureDb(): Promise<Database> {
     if (!this.db) {
-      this.db = await initDatabase({
-        log: (msg: string) => console.log('[DB]', msg),
+      this.db = initDatabase({
+        log: (msg: string) => logger.debug({ component: 'db' }, msg),
       });
       // 初始化 chat-ipc 的 orchestrator
       if (this.chatState) {
@@ -157,7 +192,7 @@ export class IpcHandlers {
       if (this.chatState) {
         this.chatState.workerBridge?.dispose();
         this.chatState.workerBridge = null;
-        this.chatState.useWorkerMode = false;
+        this.chatState.useWorkerMode = true;
       }
       this.cachedBundle = null;
       this.needsRuntimeReinit = false;
@@ -172,7 +207,8 @@ export class IpcHandlers {
 
     const bundle = await createDesktopRuntimeBundle({
       db,
-      autoApprovePermissions: true,
+      permissionPolicy: this.loadPermissionPolicy(),
+      permissionRequestCallback: (toolName, input, safety, reason) => this.requestToolPermission(toolName, input, safety, reason),
       getOpenAICompatConfig: () => this.loadOpenAICompatConfig(),
       emitEvent: (event) => this.sendAgentEvent(event),
       appDataDir: getAppDataDir(),
@@ -186,18 +222,19 @@ export class IpcHandlers {
         const workerReady = await bridge.initialize({
           dbPath: (db as any).dbPath,
           openAICompatConfig: this.loadOpenAICompatConfig(),
+          permissionPolicy: this.loadPermissionPolicy(),
         });
         if (workerReady) {
           this.chatState.workerBridge = bridge;
           this.chatState.useWorkerMode = true;
-          console.log('[IpcHandlers] Worker Bridge initialized, using Worker mode');
+          logger.info({ component: 'worker' }, 'Worker Bridge initialized, using Worker mode');
         } else {
           this.chatState.useWorkerMode = false;
-          console.log('[IpcHandlers] Worker Bridge not ready, using direct mode');
+          logger.warn({ component: 'worker' }, 'Worker Bridge not ready, using direct mode');
         }
       } catch (error) {
         this.chatState.useWorkerMode = false;
-        console.warn('[IpcHandlers] Worker Bridge initialization failed, using direct mode:', error instanceof Error ? error.message : String(error));
+        logger.warn({ component: 'worker', error: error instanceof Error ? error.message : String(error) }, 'Worker Bridge initialization failed, using direct mode');
       }
     }
 
@@ -216,20 +253,90 @@ export class IpcHandlers {
       const model = getSetting(this.db, 'openai_compat_model') as { value: string } | null;
       const apiKey = getSetting(this.db, 'openai_compat_api_key') as { value: string } | null;
       const embedModel = getSetting(this.db, 'openai_compat_embed_model') as { value: string } | null;
+      const reasoningLevel = getSetting(this.db, 'reasoning_level', { value: 'high' }) as { value: string } | null;
+      const modelConfig = this.resolveReasoningModelConfig(reasoningLevel?.value ?? 'high');
 
-      if (url?.value && model?.value) {
-        return {
-          baseUrl: url.value,
-          chatModel: model.value,
-          apiKey: apiKey?.value ?? undefined,
-          embeddingModel: embedModel?.value ?? undefined,
-        };
-      }
+      return {
+        baseUrl: url?.value ?? OLLAMA_DEFAULT_BASE_URL,
+        chatModel: model?.value ?? DEFAULT_CHAT_MODEL,
+        apiKey: apiKey?.value ?? undefined,
+        embeddingModel: embedModel?.value ?? DEFAULT_EMBEDDING_MODEL,
+        ...modelConfig,
+      };
     } catch {
       // 配置读取失败，忽略
     }
 
     return null;
+  }
+
+  /**
+   * 将 UI 思考等级映射为实际模型请求参数。
+   * @param level - 思考等级。
+   * @returns 模型配置。
+   */
+  private resolveReasoningModelConfig(level: string): Pick<OpenAICompatConfig, 'temperature' | 'maxTokens'> {
+    if (level === 'low') {
+      return { temperature: 0.35, maxTokens: 2048 };
+    }
+    if (level === 'medium') {
+      return { temperature: 0.55, maxTokens: 4096 };
+    }
+    return { temperature: 0.7, maxTokens: 8192 };
+  }
+
+  /**
+   * 加载工具权限审批策略。
+   * @returns 权限审批策略。
+   */
+  private loadPermissionPolicy(): PermissionApprovalPolicy {
+    if (!this.db) return 'ask_dangerous';
+    const value = getSetting<{ value?: PermissionApprovalPolicy } | PermissionApprovalPolicy>(
+      this.db,
+      'permission_policy',
+      { value: 'ask_dangerous' },
+    );
+    if (typeof value === 'string') {
+      return value;
+    }
+    return value?.value ?? 'ask_dangerous';
+  }
+
+  /**
+   * 通过 Electron 系统对话框请求工具权限。
+   * @param toolName - 工具名。
+   * @param input - 工具输入。
+   * @param safety - 工具安全级别。
+   * @param reason - 请求原因。
+   * @returns 用户权限决策。
+   */
+  private async requestToolPermission(
+    toolName: string,
+    input: Record<string, unknown>,
+    safety: ToolSafety,
+    reason: string,
+  ): Promise<PermissionDecision> {
+    const detail = [
+      `工具：${toolName}`,
+      `安全级别：${safety}`,
+      reason ? `原因：${reason}` : '',
+      `参数：${JSON.stringify(input, null, 2).slice(0, 800)}`,
+    ].filter(Boolean).join('\n');
+    const result = await dialog.showMessageBox(this.win, {
+      type: 'warning',
+      buttons: ['允许一次', '拒绝'],
+      defaultId: 1,
+      cancelId: 1,
+      title: '批准 WorkAgent 操作',
+      message: '是否允许本次工具操作？',
+      detail,
+      noLink: true,
+    });
+    return {
+      allowed: result.response === 0,
+      remember: false,
+      reason: result.response === 0 ? '用户允许本次操作' : '用户拒绝本次操作',
+    };
   }
 
   /**
@@ -280,5 +387,6 @@ export class IpcHandlers {
     ipcMain.removeHandler('settings-get');
     ipcMain.removeHandler('models-status');
     ipcMain.removeHandler('open-file-dialog');
+    ipcMain.removeHandler('reveal-in-explorer');
   }
 }

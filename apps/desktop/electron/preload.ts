@@ -137,6 +137,9 @@ const api = {
   deleteSession: (sessionId: string): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('session-delete', sessionId),
 
+  updateSessionTitle: (sessionId: string, title: string): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('session-update-title', sessionId, title),
+
   sessionMessages: (sessionId: string): Promise<SessionMessagesResult['messages']> =>
     ipcRenderer.invoke('session-messages', sessionId),
 
@@ -189,6 +192,10 @@ const api = {
   openFileDialog: (options?: { multiple?: boolean; directory?: boolean; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string[]> =>
     ipcRenderer.invoke('open-file-dialog', options),
 
+  // 在资源管理器中查看目录
+  revealInExplorer: (targetPath: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('reveal-in-explorer', targetPath),
+
   // 工作区
   listWorkspaces: (): Promise<WorkspaceResult[]> =>
     ipcRenderer.invoke('workspace-list'),
@@ -224,6 +231,17 @@ const api = {
     ipcRenderer.on('ollama-status', handler);
     return () => ipcRenderer.removeListener('ollama-status', handler);
   },
+
+  /** 原生菜单命令监听 */
+  onMenuCommand: (callback: (command: unknown) => void): (() => void) => {
+    const handler = (_ev: Electron.IpcRendererEvent, data: unknown) => callback(data);
+    ipcRenderer.on('menu-command', handler);
+    return () => ipcRenderer.removeListener('menu-command', handler);
+  },
+
+  /** 无边框窗口控制 */
+  windowControl: (action: 'minimize' | 'maximize' | 'close'): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('window-control', action),
 };
 
 contextBridge.exposeInMainWorld('workagent', api);

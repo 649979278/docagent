@@ -21,6 +21,8 @@ export interface WorkspaceState {
   workspaceTree: WorkspaceItem[];
   /** 当前活跃工作区ID */
   activeWorkspaceId: string | null;
+  /** 会话与工作区绑定关系。 */
+  sessionWorkspaceMap: Record<string, string[]>;
 
   /** 设置工作区树 */
   setWorkspaceTree: (tree: WorkspaceItem[]) => void;
@@ -32,6 +34,12 @@ export interface WorkspaceState {
   removeWorkspace: (id: string) => void;
   /** 更新工作区 */
   updateWorkspaceItem: (id: string, updates: Partial<WorkspaceItem>) => void;
+  /** 批量设置会话绑定关系。 */
+  setSessionWorkspaceMap: (map: Record<string, string[]>) => void;
+  /** 设置单个会话绑定关系。 */
+  setSessionWorkspaceIds: (sessionId: string, workspaceIds: string[]) => void;
+  /** 从工作区解绑会话。 */
+  removeSessionWorkspaceId: (sessionId: string, workspaceId: string) => void;
 }
 
 /**
@@ -40,6 +48,7 @@ export interface WorkspaceState {
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   workspaceTree: [],
   activeWorkspaceId: null,
+  sessionWorkspaceMap: {},
 
   setWorkspaceTree: (tree) => set({ workspaceTree: tree }),
   setActiveWorkspaceId: (id) => set({ activeWorkspaceId: id }),
@@ -54,5 +63,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     workspaceTree: s.workspaceTree.map((workspace) => (
       workspace.id === id ? { ...workspace, ...updates } : workspace
     )),
+  })),
+  setSessionWorkspaceMap: (sessionWorkspaceMap) => set({ sessionWorkspaceMap }),
+  setSessionWorkspaceIds: (sessionId, workspaceIds) => set((state) => ({
+    sessionWorkspaceMap: {
+      ...state.sessionWorkspaceMap,
+      [sessionId]: workspaceIds,
+    },
+  })),
+  removeSessionWorkspaceId: (sessionId, workspaceId) => set((state) => ({
+    sessionWorkspaceMap: {
+      ...state.sessionWorkspaceMap,
+      [sessionId]: (state.sessionWorkspaceMap[sessionId] ?? []).filter((id) => id !== workspaceId),
+    },
   })),
 }));

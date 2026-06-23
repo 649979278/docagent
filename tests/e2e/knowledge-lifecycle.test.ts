@@ -35,7 +35,6 @@ describe('knowledge lifecycle', () => {
       fileType: 'txt',
       sha256: first.contentHash,
     });
-    db.save();
 
     const second = await pipeline.checkIdempotent(filePath, first.contentHash, 'doc-1');
     expect(second.needsIngest).toBe(false);
@@ -97,7 +96,6 @@ describe('knowledge lifecycle', () => {
       sha256: 'hash-b',
       sourceWorkspaceId: null,
     });
-    db.save();
 
     const workspaceDocs = listDocumentsByWorkspace(db, 'ws-knowledge');
     expect(workspaceDocs).toHaveLength(1);
@@ -130,12 +128,10 @@ describe('knowledge lifecycle', () => {
       sha256: 'hash-move',
       sourceWorkspaceId: 'ws-from',
     });
-    db.save();
 
     updateDocument(db, 'doc-move-1', {
       sourceWorkspaceId: 'ws-to',
     });
-    db.save();
 
     expect(getDocument(db, 'doc-move-1')?.sourceWorkspaceId).toBe('ws-to');
     expect(listDocumentsByWorkspace(db, 'ws-from')).toHaveLength(0);

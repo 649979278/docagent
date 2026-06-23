@@ -5,7 +5,7 @@
  */
 
 import type { Message, Memory } from '@workagent/shared';
-import { COMPACT_KEEP_RECENT_MESSAGES } from '@workagent/shared';
+import { COMPACT_KEEP_RECENT_MESSAGES, countTokens } from '@workagent/shared';
 import type { ModelProvider } from '@workagent/model-provider';
 import type { ChatMessage } from '@workagent/model-provider';
 
@@ -234,5 +234,5 @@ function estimateMessagesTokens(messages: Message[]): number {
  * @returns 估算的token数
  */
 function estimateTokens(content: string): number {
-  return Math.ceil(content.length / 2);
+  return countTokens(content);
 }

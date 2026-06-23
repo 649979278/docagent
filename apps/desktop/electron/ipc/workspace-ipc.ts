@@ -34,35 +34,30 @@ export function registerWorkspaceIpc(ctx: IpcHandlerContext): void {
       name,
       rootPath,
     });
-    db.save();
     return workspace;
   });
 
   ipcMain.handle('workspace-update', async (_ev, workspaceId: string, updates: { name?: string; rootPath?: string }) => {
     const db = await ctx.ensureDb();
     updateWorkspace(db, workspaceId, updates);
-    db.save();
     return { success: true };
   });
 
   ipcMain.handle('workspace-delete', async (_ev, workspaceId: string) => {
     const db = await ctx.ensureDb();
     deleteWorkspace(db, workspaceId);
-    db.save();
     return { success: true };
   });
 
   ipcMain.handle('workspace-bind-session', async (_ev, workspaceId: string, sessionId: string) => {
     const db = await ctx.ensureDb();
     bindSessionToWorkspace(db, sessionId, workspaceId);
-    db.save();
     return { success: true };
   });
 
   ipcMain.handle('workspace-unbind-session', async (_ev, workspaceId: string, sessionId: string) => {
     const db = await ctx.ensureDb();
     unbindSessionFromWorkspace(db, sessionId, workspaceId);
-    db.save();
     return { success: true };
   });
 
@@ -79,7 +74,6 @@ export function registerWorkspaceIpc(ctx: IpcHandlerContext): void {
   ipcMain.handle('workspace-document-move', async (_ev, docIds: string[], workspaceId: string | null) => {
     const db = await ctx.ensureDb();
     updateDocumentsWorkspace(db, docIds, workspaceId);
-    db.save();
     return { success: true };
   });
 
@@ -88,7 +82,6 @@ export function registerWorkspaceIpc(ctx: IpcHandlerContext): void {
     for (const sessionId of getWorkspaceSessionIds(db, workspaceId)) {
       unbindSessionFromWorkspace(db, sessionId, workspaceId);
     }
-    db.save();
     return { success: true };
   });
 }
